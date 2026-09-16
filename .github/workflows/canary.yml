@@ -1,0 +1,248 @@
+name: canary
+
+# tests.yml (deliberately) never touches transfermarkt.com — see its own
+# header for why. That leaves a real gap: a markup change on the site itself
+# only shows up when a user hits it and files an issue, while the offline
+# badge stays green throughout. This workflow is the other half — a real run,
+# on a real page, on a schedule — so a site-side break is caught here first.
+#
+# THIS CANARY RUNS WITH OR WITHOUT A SECRET, AND THE DIFFERENCE MATTERS.
+# ------------------------------------------------------------------------
+# A sibling in this family (mediamarkt-scraper) gates its canary on a
+# residential proxy secret, because that site answers every datacentre
+# address — including a GitHub runner — with HTTP 403. Transfermarkt is not
+# reliably either way, and this workflow's first version got that wrong: it
+# asserted the site challenges nobody, citing research from 2026-09-10/12.
+# Then 8 of 10 consecutive requests from a bare datacentre address were
+# answered with an AWS WAF captcha, and later the same day six distinct
+# network positions drew none at all. Whether a GitHub runner meets the WAF
+# is a property of that runner's address on that morning.
+#
+# So the rule here is NOT "this needs no secret". It is:
+#
+#   * If TRANSFERMARKT_CDP_ENDPOINT or TRANSFERMARKT_PROXY is configured,
+#     the run goes through it — that is the repo's documented default path —
+#     and being blocked anyway is a REAL failure worth a red check.
+#   * If neither is configured, the run uses a bare runner and a local
+#     Playwright browser, which is what catches a markup change, and that is
+#     the common case. But a block from a bare runner is a fact about the
+#     runner's address, not about the site, so it SKIPS with a ::notice::
+#     rather than failing. A check that goes red for a reason nobody in this
+#     repo can fix is a check everyone learns to ignore.
+#
+# Every other exit code is still interpreted and still turns this red, so a
+# markup change cannot hide behind the skip.
+#
+# Secrets reach the scraper through the ENVIRONMENT, never a command line —
+# `ps` reads argv. env_config.py reads exactly these variable names, and an
+# unset secret arrives as an empty string that the loader treats as unset,
+# so the same two lines are correct with and without them.
+on:
+  schedule:
+    # Once a day, off the hour, so it is not competing with everyone else's
+    # on-the-hour cron jobs for runner availability.
+    - cron: "37 7 * * *"
+  workflow_dispatch:
+
+jobs:
+  live-run:
+    runs-on: ubuntu-latest
+    env:
+      # `secrets` is not available in a job-level `if`, so presence is tested
+      # here, once, and read from each step's `if` and shell below. These are
+      # the strings "true"/"false", never the secret itself.
+      HAVE_CDP: ${{ secrets.TRANSFERMARKT_CDP_ENDPOINT != '' }}
+      HAVE_PROXY: ${{ secrets.TRANSFERMARKT_PROXY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright engine
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-playwright.txt
+          playwright install --with-deps chromium
+
+      - name: Say which path this run is taking
+        run: |
+          if [ "$HAVE_CDP" = "true" ]; then
+            echo "::notice::Running through the Scraping Browser API (TRANSFERMARKT_CDP_ENDPOINT is set) — the repo's documented default path. A block here is a real failure."
+          elif [ "$HAVE_PROXY" = "true" ]; then
+            echo "::notice::Running through TRANSFERMARKT_PROXY. A block here is a real failure."
+          else
+            echo "::notice::Running from a bare runner with a local Playwright browser and no secret. This catches a markup change; if the runner's address meets the WAF, this job SKIPS rather than failing."
+          fi
+
+      - name: Scrape a real, known-good market-values page
+        id: run
+        # 3 pages, not 1: with one page pagination is never exercised, so a
+        # broken ?page= convention or the "gallery pagination trap" this
+        # repo's page_flow.py works around (see pagination_is_addressable's
+        # docstring) would stay invisible here — which is precisely the
+        # silent decay this workflow exists to catch.
+        #
+        # set +e: GitHub Actions runs `run:` steps as `bash -e`, so without
+        # this a non-zero scraper exit aborts the script on THAT line and the
+        # `echo "exit_code=$?"` below never runs. continue-on-error only stops
+        # the step from failing the job; it does not touch the shell's errexit.
+        continue-on-error: true
+        env:
+          # Through the environment, never argv (see the header). Unset
+          # secrets arrive as "" and env_config.py treats that as unset, so
+          # these lines are correct in both configurations.
+          TRANSFERMARKT_CDP_ENDPOINT: ${{ secrets.TRANSFERMARKT_CDP_ENDPOINT }}
+          TRANSFERMARKT_PROXY: ${{ secrets.TRANSFERMARKT_PROXY }}
+        run: |
+          set +e
+          python3 playwright_scraper.py \
+            --mode market-values --pages 3 \
+            --out canary_run --dump-html canary_run.html
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Interpret the exit code
+        id: verdict
+        env:
+          CODE: ${{ steps.run.outputs.exit_code }}
+        run: |
+          code="$CODE"
+          skipped=false
+          case "$code" in
+            0)   echo "OK — rows parsed from a live run." ;;
+            3)   if [ "$HAVE_CDP" = "true" ] || [ "$HAVE_PROXY" = "true" ]; then
+                   echo "::error::Blocked before parsing (exit 3) while running through a configured exit (cdp=$HAVE_CDP proxy=$HAVE_PROXY). That is the documented default path failing, not the runner's address. Check the zone or proxy credentials first — a Scraping Browser zone that refuses CONNECT by host reports ERR_TUNNEL_CONNECTION_FAILED and is an account matter, not a scraper bug — then see detect_bot_challenge()/BOT_CHALLENGE_MARKERS in product_parser.py."
+                 else
+                   # No secret configured, so this ran from a bare runner. A
+                   # block here is a fact about that runner's address on the
+                   # day: 8 of 10 requests from one datacentre address were
+                   # challenged on 2026-09-16, and none at all from six other
+                   # network positions later the same day. Nothing in this
+                   # repo can fix it, so it must not paint the check red.
+                   echo "::notice::SKIPPED: this runner's address was challenged before the page was parsed (exit 3), and no TRANSFERMARKT_CDP_ENDPOINT or TRANSFERMARKT_PROXY secret is configured to route around it. That is a property of the runner's address, not of the site or of this scraper, so the canary is skipping rather than failing. Set either secret to have this run go through an exit that is not challenged -- and to make a block here a real failure."
+                   skipped=true
+                   code=0
+                 fi ;;
+            4)   echo "::error::Ran fine but parsed 0 rows (exit 4) on a page known to have thousands of rankings. The site's markup has probably changed. The HTML dump in the artifacts tells you what the parser actually saw." ;;
+            5)   echo "::error::Remote API error (exit 5) — a 2captcha product path failed. With a secret configured (cdp=$HAVE_CDP proxy=$HAVE_PROXY) that is the endpoint or the credentials; with neither, nothing should have called a remote API at all and the run log in the artifacts is where to start." ;;
+            6)   echo "::error::Partial run (exit 6) — some pages were gathered and then the run stopped early. canary_run.meta.json names which pages failed; for --mode market-values this is the known rare case where the pagination link needs the fallback chain and runs out of it (see product_parser.py's docstring on the gallery pagination trap)." ;;
+            2)   echo "::error::Bad usage (exit 2) — the workflow's own arguments are wrong, not the site." ;;
+            *)   echo "::error::Unexpected exit code $code (see the step above for the traceback)." ;;
+          esac
+          echo "skipped=$skipped" >> "$GITHUB_OUTPUT"
+          test "$code" = "0"
+
+      - name: Sanity-check the scraped data
+        # Nothing was fetched on the skip path, so there is nothing to check
+        # and canary_run.json does not exist.
+        if: steps.verdict.outputs.skipped != 'true'
+        # Exit 0 only means "some rows were written". It says nothing about
+        # whether the page actually rendered: a snapshot taken too early still
+        # writes rows, just with fields empty. Every floor below is set from a
+        # measured figure and deliberately under it, so this fails on a
+        # collapse rather than on normal variation.
+        run: |
+          python3 - <<'EOF'
+          import json, sys
+          from pathlib import Path
+
+          sys.path.insert(0, ".")
+          import page_flow
+
+          PAGES_REQUESTED = 3
+          # Measured 2026-09-12 against a live fetch of the market-values
+          # ranking: 25 rows per page, every field on every row populated
+          # (title, sku, url, currency, club, club_id, nationality, position,
+          # price all 25/25 on two separate pages fetched a page apart). The
+          # floor below is two pages' worth, so one short final page cannot
+          # trip it, and it is well under the measured 75 for three.
+          MIN_ROWS = 50
+          # page_flow.PRICE_COVERAGE_FLOOR is the same constant the runtime
+          # engines themselves warn against (playwright_scraper.py,
+          # puppeteer_scraper.py, selenium_scraper.py, scraper_api_client.py)
+          # — reusing it here means this canary and the code it is checking
+          # can never quietly disagree about what "enough" means.
+          MIN_PRICED_SHARE = page_flow.PRICE_COVERAGE_FLOOR
+
+          rows = json.loads(Path("canary_run.json").read_text())
+          meta = json.loads(Path("canary_run.meta.json").read_text())
+          fail = []
+
+          if len(rows) < MIN_ROWS:
+              fail.append(f"only {len(rows)} rows, expected at least {MIN_ROWS} "
+                          f"across {PAGES_REQUESTED} pages")
+
+          priced = sum(1 for r in rows if r.get("price") is not None)
+          if rows and priced / len(rows) < MIN_PRICED_SHARE:
+              fail.append(f"only {priced}/{len(rows)} rows have a price "
+                          f"(floor {MIN_PRICED_SHARE:.0%}) — market-values rows "
+                          f"with no price at all means the value column moved")
+
+          # Fields measured at 100% on every page fetched 2026-09-12. Any of
+          # them collapsing means an anchor moved. Kept at 0.95, not 1.0, to
+          # leave room for one genuinely odd row without the canary flapping.
+          for field, floor in (("title", 0.95), ("sku", 1.0), ("url", 1.0),
+                               ("currency", 0.9), ("category", 1.0),
+                               ("club", 0.9), ("club_id", 0.9),
+                               ("nationality", 0.9), ("position", 0.9)):
+              got = sum(1 for r in rows if r.get(field) not in (None, ""))
+              if rows and got / len(rows) < floor:
+                  fail.append(f"{field} present on only {got}/{len(rows)} rows "
+                              f"(floor {floor:.0%})")
+
+          # Inspired by this family's tokopedia-scraper lesson (CLAUDE.md
+          # §18): a page number never threaded into the parser produces
+          # (page, row_index) collisions across pages that look, from the row
+          # count alone, like a perfectly healthy run. Assert the pairs are
+          # actually unique rather than trusting that they are.
+          pairs = [(r.get("page"), r.get("row_index")) for r in rows]
+          dupes = {p for p in pairs if pairs.count(p) > 1}
+          if dupes:
+              fail.append(f"{len(dupes)} (page, row_index) pair(s) repeated "
+                          f"across the run: {list(dupes)[:3]} — the page "
+                          f"number is not being threaded into the parser, or "
+                          f"the same page was fetched twice")
+
+          if meta.get("pages_completed", 0) < PAGES_REQUESTED:
+              fail.append(f"pagination stopped after {meta.get('pages_completed')} "
+                          f"of {PAGES_REQUESTED} pages (stop_reason="
+                          f"{meta.get('stop_reason')!r})")
+          if meta.get("status") != "complete":
+              fail.append(f"run status is {meta.get('status')!r}, not 'complete'")
+          if meta.get("mode") != "market-values":
+              fail.append(f"run mode is {meta.get('mode')!r}, not 'market-values'")
+          # site_host() (product_parser.py) does not strip "www." -- the
+          # default target (MARKET_VALUES_URL) is built against
+          # https://www.transfermarkt.com, so a real run's source is always
+          # "www.transfermarkt.com", never the bare domain. Caught by
+          # actually running this against the live site rather than trusting
+          # the bare-domain assumption this check shipped with originally.
+          if meta.get("source") != "www.transfermarkt.com":
+              fail.append(f"run source is {meta.get('source')!r}, not "
+                          f"'www.transfermarkt.com'")
+
+          for line in fail:
+              print(f"::error::{line}")
+          print(f"[canary] {len(rows)} rows, {priced} priced, "
+                f"status={meta.get('status')}, "
+                f"pages={meta.get('pages_completed')}/{PAGES_REQUESTED}")
+          sys.exit(1 if fail else 0)
+          EOF
+
+      - name: Upload run artifacts (output, HTML snapshot, debug dumps)
+        # Always, not just on failure: a run that returns the WRONG numbers
+        # with no error is exactly the regression that needs the actual bytes
+        # the parser saw, not a pass/fail badge.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-run-${{ github.run_id }}
+          path: |
+            canary_run.json
+            canary_run.csv
+            canary_run.meta.json
+            canary_run.html*
+            canary_run_page*_debug.*
+          if-no-files-found: ignore
+          retention-days: 14

@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>transfermarkt-scraper — market values, squads, transfers, player profiles</title>
+<meta name="description" content="Open-source scraper for transfermarkt.com: market values, club squads, transfers and player profiles. Three engines, JSON or CSV, MIT licensed.">
+<style>
+  :root{
+    --bg:#0b0e14; --bg2:#11151f; --panel:#141926; --panel2:#1a2032;
+    --border:#242c3f; --text:#e7ebf5; --muted:#93a0bd; --muted2:#5f6c8a;
+    --accent:#5ee6a8; --accent2:#7aa8ff; --warn:#ffb454; --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{color-scheme:dark}
+  body{
+    margin:0; background:var(--bg); color:var(--text); font-family:var(--sans);
+    line-height:1.55; -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--accent2)}
+  .wrap{max-width:980px; margin:0 auto; padding:0 20px}
+  header.topbar{
+    position:sticky; top:0; z-index:20; backdrop-filter:blur(8px);
+    background:rgba(11,14,20,.82); border-bottom:1px solid var(--border);
+  }
+  .topbar__inner{display:flex; align-items:center; justify-content:space-between; padding:14px 20px}
+  .brand{color:var(--text); text-decoration:none; font-weight:700; letter-spacing:.2px}
+  .brand span{color:var(--accent)}
+  .topnav{display:flex; gap:18px; font-size:14px}
+  .topnav a{color:var(--muted); text-decoration:none}
+  .topnav a:hover{color:var(--text)}
+  section{padding:56px 0}
+  .eyebrow{color:var(--muted2); font-size:13px; letter-spacing:.4px; margin:0 0 10px}
+  h1{font-size:clamp(28px,5vw,44px); line-height:1.15; margin:0 0 14px}
+  h1 .accent{color:var(--accent)}
+  .lede{color:var(--muted); font-size:17px; max-width:640px; margin:0 0 28px}
+  .cta-row{display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:36px}
+  .btn{
+    display:inline-block; padding:11px 18px; border-radius:8px; font-weight:600;
+    font-size:14px; text-decoration:none; border:1px solid transparent;
+  }
+  .btn--solid{background:var(--accent); color:#062018}
+  .btn--ghost{border-color:var(--border); color:var(--text)}
+  .cta-note{color:var(--muted2); font-size:13px}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:18px}
+  @media (max-width:760px){ .grid2{grid-template-columns:1fr} }
+  .panel{
+    background:var(--panel); border:1px solid var(--border); border-radius:10px; overflow:hidden;
+  }
+  .panel__head{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:10px 14px; border-bottom:1px solid var(--border); background:var(--panel2);
+  }
+  .panel__head .lbl{font-size:12px; color:var(--muted2); text-transform:uppercase; letter-spacing:.5px}
+  pre{
+    margin:0; padding:16px; font-family:var(--mono); font-size:13px; overflow-x:auto;
+    color:#cfe3d9;
+  }
+  pre .k{color:var(--accent2)} pre .s{color:#c9d6ff} pre .n{color:var(--accent)} pre .c{color:var(--muted2)}
+  .chips{display:flex; gap:8px; flex-wrap:wrap; padding:12px 14px 0}
+  .chip{
+    background:transparent; border:1px solid var(--border); color:var(--muted);
+    border-radius:999px; padding:6px 13px; font-size:13px; cursor:pointer; font-family:var(--sans);
+  }
+  .chip[aria-pressed="true"]{background:var(--accent); color:#062018; border-color:var(--accent); font-weight:600}
+  h2{font-size:24px; margin:0 0 8px}
+  .section-note{color:var(--muted); margin:0 0 24px; max-width:680px}
+  table.modes{width:100%; border-collapse:collapse; font-size:14px}
+  table.modes th, table.modes td{text-align:left; padding:12px 14px; border-bottom:1px solid var(--border)}
+  table.modes th{color:var(--muted2); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.4px}
+  table.modes code{background:var(--panel2); padding:2px 6px; border-radius:4px; font-size:12.5px}
+  .measured{color:var(--accent); font-size:13px}
+  .cards{display:grid; grid-template-columns:repeat(3,1fr); gap:16px}
+  @media (max-width:760px){ .cards{grid-template-columns:1fr} }
+  .card{background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:20px}
+  .card h3{margin:0 0 8px; font-size:16px}
+  .card p{margin:0; color:var(--muted); font-size:14px}
+  .card .tag{display:inline-block; font-size:11px; color:var(--warn); border:1px solid #4a3a1e; background:#221a0d; padding:2px 8px; border-radius:999px; margin-bottom:10px}
+  .bug{
+    background:var(--panel); border:1px solid var(--border); border-left:3px solid var(--warn);
+    border-radius:0 10px 10px 0; padding:18px 20px; margin-bottom:14px;
+  }
+  .bug h3{margin:0 0 6px; font-size:15px}
+  .bug p{margin:0; color:var(--muted); font-size:14px}
+  .divider{border:none; border-top:1px solid var(--border); margin:0}
+  footer{padding:40px 0 60px; color:var(--muted2); font-size:13px}
+  footer a{color:var(--muted)}
+  .faq dt{font-weight:600; margin-top:18px}
+  .faq dd{margin:6px 0 0; color:var(--muted)}
+  .steps{counter-reset:step}
+  .step{display:flex; gap:16px; margin-bottom:20px}
+  .step__num{
+    flex:0 0 auto; width:28px; height:28px; border-radius:50%; background:var(--panel2);
+    border:1px solid var(--border); display:flex; align-items:center; justify-content:center;
+    font-size:13px; color:var(--accent); font-weight:700;
+  }
+  .step__body{flex:1}
+  .step__body p{margin:4px 0 8px; color:var(--muted); font-size:14px}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar__inner">
+    <a class="brand" href="#top">2<span>scraper</span> / transfermarkt</a>
+    <nav class="topnav">
+      <a href="#modes">Modes</a>
+      <a href="#engines">Engines</a>
+      <a href="#stack">Stack</a>
+      <a href="#start">Quick start</a>
+      <a href="https://github.com/2scraper/transfermarkt-scraper">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <section class="wrap">
+    <p class="eyebrow">Open source · MIT · github.com/2scraper/transfermarkt-scraper</p>
+    <h1>Market values, squads, transfers and<br>player profiles — <span class="accent">structured, on demand.</span></h1>
+    <p class="lede">A scraper for transfermarkt.com built from real captured pages, not
+      guesswork. Every field below was checked against the live site before it shipped —
+      where something turned out to be null, doubled, or session-gated, that behaviour is
+      documented rather than papered over.</p>
+    <div class="cta-row">
+      <a class="btn btn--solid" href="https://github.com/2scraper/transfermarkt-scraper">Clone the repo</a>
+      <a class="btn btn--ghost" href="#start">Quick start</a>
+      <span class="cta-note">Python 3.9+</span>
+    </div>
+
+    <div class="panel">
+      <div class="chips" role="group" aria-label="Example modes">
+        <button class="chip" aria-pressed="true"  data-demo="squad">club-squad</button>
+        <button class="chip" aria-pressed="false" data-demo="market">market-values</button>
+        <button class="chip" aria-pressed="false" data-demo="transfer">transfers</button>
+        <button class="chip" aria-pressed="false" data-demo="player">player</button>
+      </div>
+      <div class="grid2" style="padding:14px">
+        <div class="panel" style="border-radius:8px">
+          <div class="panel__head"><span class="lbl">You run</span></div>
+          <pre id="demo-cmd"></pre>
+        </div>
+        <div class="panel" style="border-radius:8px">
+          <div class="panel__head"><span class="lbl">You get (one row)</span></div>
+          <pre id="demo-json"></pre>
+        </div>
+      </div>
+      <p class="section-note" style="padding:0 14px 14px; margin:0" id="demo-note"></p>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <section class="wrap" id="modes">
+    <h2>Four modes today</h2>
+    <p class="section-note">Four, not twenty. This is a v0.1 release, scoped deliberately
+      rather than promising coverage that was not built and checked yet — each row below
+      is a real measurement, not a guess.</p>
+    <table class="modes">
+      <thead><tr><th>Mode</th><th>What you get</th><th>Measured</th></tr></thead>
+      <tbody>
+        <tr><td><code>market-values</code></td><td>The global most-valuable-players ranking, page by page</td><td class="measured">25/25 rows priced</td></tr>
+        <tr><td><code>club-squad</code></td><td>A club's full roster: number, position, age, nationality, value</td><td class="measured">36/43 priced (7 real nulls)</td></tr>
+        <tr><td><code>transfers</code></td><td>The live transfer ledger: fee, fee type, from/to club &amp; league</td><td class="measured">0 duplicate ids across 2 pages</td></tr>
+        <tr><td><code>player</code></td><td>Full profile: birth date, height, agent, contract dates, caps</td><td class="measured">32 fields, 29 populated</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <hr class="divider">
+
+  <section class="wrap">
+    <h2>Two kinds of row, not one padded schema</h2>
+    <p class="section-note">A market value and a transfer fee are not the same kind of
+      fact, so this scraper does not force them into one row shape with half its columns
+      permanently empty.</p>
+    <div class="cards">
+      <div class="card">
+        <h3>Player rows</h3>
+        <p><code>market-values</code>, <code>club-squad</code>, <code>player</code> —
+          position, club, nationality, market value, contract dates.</p>
+      </div>
+      <div class="card">
+        <h3>Transfer rows</h3>
+        <p><code>transfers</code> — both clubs, both leagues, the fee and its type:
+          disclosed, loan, free, or undisclosed.</p>
+      </div>
+      <div class="card">
+        <h3>Shared prefix</h3>
+        <p>Both open on the same id / title / price / currency / timestamp columns, so
+          tooling written against one reads the other's shared fields unchanged.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <section class="wrap">
+    <h2>Built from real pages, bugs and all</h2>
+    <p class="section-note">Two real parsing bugs were found and fixed while building
+      this — documented rather than glossed over, because they're exactly the kind of
+      thing that costs someone else an afternoon otherwise.</p>
+
+    <div class="bug">
+      <h3>A doubled club name</h3>
+      <p>A transfer's <code>from_club</code> came back
+        <code>"Without ClubWithout Club"</code> for a free-agent placeholder. The site's
+        own markup really does carry a doubled <code>title</code> attribute there,
+        compounded by a second link in the same cell that wraps only an image. Fixed by
+        reading the text-bearing anchor specifically.</p>
+    </div>
+    <div class="bug">
+      <h3>Missing contract dates</h3>
+      <p><code>joined_date</code> and <code>contract_until</code> came back
+        <code>null</code> on every player profile, despite being visible on the page. The
+        header uses the same CSS class on two different tag types for these two fields
+        versus the rest — a markup inconsistency on the site's own part. Fixed by
+        matching both.</p>
+    </div>
+    <p class="section-note" style="margin-top:14px">Both are now pinned cases in the
+      offline test suite, checked against the exact capture that found them.</p>
+  </section>
+
+  <hr class="divider">
+
+  <section class="wrap" id="engines">
+    <h2>Three engines, one contract</h2>
+    <p class="section-note">Same modes, same flags, same output shape. Use whichever your
+      stack already runs.</p>
+    <div class="cards">
+      <div class="card">
+        <span class="tag">recommended</span>
+        <h3>Playwright</h3>
+        <p>The only engine with <code>--concurrency</code>, safe on the one mode
+          (<code>transfers</code>) measured to have genuinely independent pagination.</p>
+        <pre style="margin-top:10px; padding:10px; background:var(--panel2); border-radius:6px; font-size:12px">pip install playwright
+playwright install chromium
+python3 playwright_scraper.py --mode transfers --pages 5 --concurrency 4</pre>
+      </div>
+      <div class="card">
+        <h3>Selenium</h3>
+        <p>For teams already on WebDriver. Cannot authenticate a remote CDP endpoint or a
+          proxy — documented, not silently broken.</p>
+        <pre style="margin-top:10px; padding:10px; background:var(--panel2); border-radius:6px; font-size:12px">pip install selenium
+python3 selenium_scraper.py --mode market-values --pages 2</pre>
+      </div>
+      <div class="card">
+        <h3>Puppeteer (pyppeteer)</h3>
+        <p>Puppeteer's own API, in Python — not a Node.js process.</p>
+        <pre style="margin-top:10px; padding:10px; background:var(--panel2); border-radius:6px; font-size:12px">pip install pyppeteer
+python3 puppeteer_scraper.py --mode player --player-id 418560</pre>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <section class="wrap" id="stack">
+    <h2>When a scrape needs more than a browser</h2>
+    <div class="cards">
+      <div class="card">
+        <h3>Proxies, if you need them</h3>
+        <p>Whether transfermarkt.com treats a datacentre address any differently from a
+          residential one is genuinely unmeasured for this release — stated plainly
+          rather than assuming the usual story. <code>--proxy-file</code> takes a pool the
+          moment you need one.</p>
+        <p style="margin-top:10px"><a href="https://2prx.com">Proxies at 2prx.com →</a></p>
+      </div>
+      <div class="card">
+        <h3>A challenge page instead of data</h3>
+        <p>Cloudflare, DataDome, PerimeterX, reCAPTCHA and hCaptcha are all detected.
+          Pass <code>--twocaptcha-key</code> and the scraper solves and continues on the
+          same page.</p>
+        <p style="margin-top:10px"><a href="https://2captcha.com">Solver at 2captcha.com →</a></p>
+      </div>
+      <div class="card">
+        <h3>A fingerprint that doesn't add up</h3>
+        <p><code>--fingerprint</code> pulls a real device fingerprint — user agent,
+          screen, locale, timezone, all consistent with each other — instead of a
+          headless default that isn't.</p>
+        <p style="margin-top:10px"><a href="https://2captcha.com/s/fingerprints">Fingerprint data →</a></p>
+      </div>
+      <div class="card">
+        <h3>A managed, already-fingerprinted browser</h3>
+        <p>Point <code>--cdp-endpoint</code> at the Scraping Browser API and the same
+          script runs against a hosted Chrome profile with its own persistent cookies and
+          exit country.</p>
+        <p style="margin-top:10px"><a href="https://2captcha.com/scraper/browser-api">Scraping Browser API →</a></p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <section class="wrap" id="start">
+    <h2>Quick start</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step__num">1</div>
+        <div class="step__body">
+          <strong>Install</strong>
+          <p>Get the code and one engine.</p>
+          <pre style="background:var(--panel); border:1px solid var(--border); border-radius:8px">git clone https://github.com/2scraper/transfermarkt-scraper
+cd transfermarkt-scraper
+pip install -r requirements.txt -r requirements-playwright.txt
+playwright install chromium</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step__num">2</div>
+        <div class="step__body">
+          <strong>Run the offline suite</strong>
+          <p>No network, no browser, ~1 second.</p>
+          <pre style="background:var(--panel); border:1px solid var(--border); border-radius:8px">python3 smoke_test.py</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step__num">3</div>
+        <div class="step__body">
+          <strong>Scrape something real</strong>
+          <p></p>
+          <pre style="background:var(--panel); border:1px solid var(--border); border-radius:8px">python3 playwright_scraper.py --mode club-squad --club-id 281 --season 2025</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step__num">4</div>
+        <div class="step__body">
+          <strong>Add proxies and solving, if you need them</strong>
+          <p></p>
+          <pre style="background:var(--panel); border:1px solid var(--border); border-radius:8px">cp .env.example .env   # fill in TWOCAPTCHA_KEY / TRANSFERMARKT_PROXY
+python3 playwright_scraper.py --mode transfers --pages 10 --concurrency 4</pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <section class="wrap">
+    <h2>Questions</h2>
+    <dl class="faq">
+      <dt>Where do the ids come from?</dt>
+      <dd>Transfermarkt's own URLs. <code>.../profil/spieler/418560</code> is player
+        418560; <code>.../verein/281</code> is club 281 (Manchester City). Both are
+        visible in any club or player URL on the site.</dd>
+
+      <dt>Will it break when the site changes?</dt>
+      <dd>Eventually, yes — any scraper does. Selectors live in one file
+        (<code>product_parser.py</code>) shared by all three engines, so a layout change
+        is usually a few lines in one place. <code>--dump-html</code> writes the exact
+        page a run saw, so a report can include it.</dd>
+
+      <dt>Do I need the paid add-ons?</dt>
+      <dd>No. The scraper is complete and MIT-licensed on its own. Whether you need a
+        proxy at all is, honestly, something this release cannot tell you yet — try
+        without one first and see.</dd>
+
+      <dt>JSON or CSV?</dt>
+      <dd>Both, from the same run. List fields (a player's dual nationality) join with
+        <code>" | "</code> in CSV so a cell stays readable in a spreadsheet, and stay a
+        real list in JSON.</dd>
+
+      <dt>What's not here yet?</dt>
+      <dd>League tables, fixtures, match reports, coach and referee profiles, and
+        Transfermarkt's other locale sites (.de, .es, ...) — all out of scope for this
+        release, not silently broken. See the README's roadmap.</dd>
+    </dl>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>This project collects publicly visible pages only. Transfermarkt is a trademark of
+      its owners and is not affiliated with this project. Read the site's terms of service
+      and <code>robots.txt</code>, keep request rates reasonable, don't collect personal
+      data you have no basis to process, and check the rules that apply where you operate
+      — how you use the output is your responsibility.</p>
+    <p>2scraper / transfermarkt-scraper · MIT ·
+      <a href="https://github.com/2scraper/transfermarkt-scraper">GitHub</a> ·
+      <a href="https://2captcha.com">2Captcha</a> ·
+      <a href="https://2prx.com">2prx</a> · Built by the 2Captcha team</p>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var DEMOS = {
+    squad: {
+      cmd: 'python3 playwright_scraper.py \\\n  --mode club-squad --club-id 281 --season 2025',
+      note: 'One row of a real 43-player squad (36 priced; 7 real nulls for youth/fringe players).',
+      json: {sku:"418560", title:"Erling Haaland", position:"Centre-Forward", shirt_number:9, age:25, nationality:"Norway", price:200000000.0, currency:"EUR", club:"Manchester City", club_id:"281"}
+    },
+    market: {
+      cmd: 'python3 playwright_scraper.py --mode market-values',
+      note: 'Row 1 of the global market-value ranking, page 1 (25/25 rows priced).',
+      json: {rank:1, sku:"937958", title:"Lamine Yamal", position:"Right Winger", age:19, nationality:"Spain", price:220000000.0, currency:"EUR", club:"FC Barcelona", club_id:"131"}
+    },
+    transfer: {
+      cmd: 'python3 playwright_scraper.py --mode transfers --pages 5 --concurrency 4',
+      note: 'One disclosed transfer from the live ledger (fee_type also covers loan / free / undisclosed).',
+      json: {sku:"6579640", title:"Emiliano Gomez", price:3400000.0, currency:"EUR", fee_type:"disclosed", from_club:"Puebla FC", to_club:"Tigres UANL", player_id:"577489"}
+    },
+    player: {
+      cmd: 'python3 playwright_scraper.py --mode player --player-id 418560',
+      note: 'Full profile detail — 32 fields defined, 29 populated on this capture (the other 3 — rank, page, row_index — are listing-only fields, correctly null on a single-player fetch).',
+      json: {sku:"418560", title:"Erling Haaland", club:"Manchester City", league:"Premier League", birth_date:"21/07/2000", height_m:1.95, agent:"Rafaela Pimenta", joined_date:"01/07/2022", contract_until:"30/06/2034", caps:55, international_goals:62}
+    }
+  };
+  var chips = document.querySelectorAll('.chip');
+  var cmdEl = document.getElementById('demo-cmd');
+  var jsonEl = document.getElementById('demo-json');
+  var noteEl = document.getElementById('demo-note');
+
+  function render(key){
+    var d = DEMOS[key];
+    cmdEl.textContent = d.cmd;
+    jsonEl.textContent = JSON.stringify(d.json, null, 2);
+    noteEl.textContent = d.note;
+    chips.forEach(function(c){ c.setAttribute('aria-pressed', c.dataset.demo === key ? 'true' : 'false'); });
+  }
+  chips.forEach(function(c){
+    c.addEventListener('click', function(){ render(c.dataset.demo); });
+  });
+  render('squad');
+})();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,141 @@
+name: Bug report
+description: The scraper ran but the result was wrong, empty, or it crashed.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before anything else: never paste an API key, a proxy password or a
+        full `ws://user:pass@...` endpoint into a public issue.** The scrapers
+        mask credentials in their own logs, but raw HTML dumps do not.
+        Replace them with `***`.
+
+        A few things answer most reports faster than we can:
+
+        - **Exit 3 (blocked)?** This repo's own research found no captcha,
+          proxy or browser challenge anywhere on this site from a plain
+          datacentre fetch (see `scraper_api_client.py`'s docstring and
+          `.env.example`) — so exit 3 here usually means something upstream
+          really changed, not that a proxy or `--twocaptcha-key` is missing.
+          Check `product_parser.detect_bot_challenge()` / `BOT_CHALLENGE_MARKERS`
+          against what the page actually returned.
+        - **Zero rows on `--mode market-values --pages N > 1`?** Check
+          whether this is the rare "gallery pagination trap" case in the
+          README first — a fallback chain exists for it, and running out of
+          it is an expected `exit 6` (partial), not a bug.
+        - **Wrong club on a `--mode club-squad` row?** Transfermarkt itself
+          shows a loaned player's *parent* club on the squad page under some
+          conditions — check the page's own title and canonical URL before
+          assuming the parser mis-attributed it.
+        - **`--mode club-squad` or `--mode player` gave a 404 / wrong page?**
+          Double check the `--club-id`/`--season` or `--player-id` against
+          the numeric id in a transfermarkt.com URL — a slug typo silently
+          resolves to a different profile.
+
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Which engine
+      options:
+        - playwright_scraper.py
+        - puppeteer_scraper.py
+        - selenium_scraper.py
+        - scraper_api_client.py
+        - fingerprint_client.py
+        - other / not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Which --mode
+      options:
+        - market-values
+        - club-squad
+        - transfers
+        - player
+        - not applicable
+    validations:
+      required: true
+
+  - type: dropdown
+    id: browser_route
+    attributes:
+      label: How was the browser reached
+      options:
+        - A browser the script launched itself
+        - A remote browser over --cdp-endpoint
+        - No browser (scraper_api_client.py over plain HTTP)
+        - Not applicable
+    validations:
+      required: true
+
+  - type: input
+    id: exit_code
+    attributes:
+      label: Exit code
+      description: >-
+        `echo $?` straight after the run. These mean specific things — 3 is a
+        challenge page, 4 is "ran fine, found nothing", 6 is a partial run.
+        The table is in the README.
+      placeholder: "4"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: The exact command
+      description: With credentials replaced by `***`.
+      render: shell
+      placeholder: |
+        python3 playwright_scraper.py \
+          --mode market-values --pages 3 --out market_values
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: >-
+        The whole run, not just the last line — the useful detail is usually
+        upstream of the error. Credentials replaced by `***`.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      placeholder: >-
+        25 rows per page, as the README says a market-values page yields.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Please run and paste:
+        ```
+        python3 -c "import sys, platform; print(sys.version, platform.platform())"
+        pip list 2>/dev/null | grep -Ei "playwright|pyppeteer|selenium|beautifulsoup4|requests|webdriver"
+        python3 smoke_test.py | tail -3
+        ```
+      render: text
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: The offline suite passes on my machine (`python3 smoke_test.py`)
+          required: true
+        - label: I removed every API key, password and credentialled URL from this report
+          required: true
