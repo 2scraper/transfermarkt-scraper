@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "transfermarkt-scraper"
-version = "1.1.0"
+version = "1.1.1"
 description = "Transfermarkt scraper: player market values, club squads, latest transfers and player profiles."
 readme = "README.md"
 license = "MIT"
