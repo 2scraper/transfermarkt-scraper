@@ -269,6 +269,32 @@ that stays live, which is a stronger reason to keep it out. The shipped
 script now says a 401 is a malformed or superseded login and points at the
 client that fetches a fresh one.
 
+### Measured on a GitHub runner — the datacentre exit, at last
+
+Every earlier note in this repo said a **datacentre** address was the one
+class of exit never retried, and that the 8-of-10 figure in its history came
+from one. The canary's first manual `workflow_dispatch`, 2026-09-17,
+supplied it: a bare GitHub runner **was** challenged.
+
+It was the CHALLENGE action, not the CAPTCHA one — `challengeScript=True`,
+`captchaScript=False` — and the guard added in this release did its job on
+its first real outing: no widget, so nothing was sent to the solver API and
+nothing was charged.
+
+The SKIP branch worked as designed, and this is the manual dispatch the
+v1.0.0 notes recorded as still owed. Exit 3, no secret configured, two
+`::notice::` annotations, the sanity-check step skipped, and the job green
+rather than red.
+
+**And it contradicted a sentence this release shipped.** The engines logged
+"a browser passes this by running the script" — here a real Chromium did
+not. The run reported blocked **0.4 seconds** after the fetch, which is not
+long enough for a challenge script to do anything. So the claim was about
+browsers in general and the engine never tested it: it does not wait for the
+challenge action to resolve. The log line now says what was measured, and
+that the engine does not wait, rather than asserting what a browser would
+do. Making it wait is not done and is not claimed.
+
 ### Measured, and NOT concluded
 
 - **Applying a voucher by hand is still unsolved.** 2Captcha's documentation

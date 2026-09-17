@@ -444,9 +444,12 @@ def handle_captcha_if_present(page, args, ready_selector: str,
     # above is still the right thing to do for it.
     if challenge.is_aws_waf and not challenge.has_captcha_widget:
         logger.info("AWS WAF %s action and no captcha widget on the page — "
-                    "not sending this to the solver API. A browser passes "
-                    "this by running the script; if it did not, the exit is "
-                    "the variable here, not the solver.",
+                    "not sending this to the solver API; there is no puzzle "
+                    "here to buy an answer to. NOTE: this engine does not "
+                    "wait for the challenge script to finish either, so a "
+                    "run can report blocked on a page a browser might have "
+                    "cleared by itself — measured on a GitHub runner "
+                    "2026-09-17, blocked 0.4s after the fetch.",
                     challenge.aws_waf_action)
         return False
 
