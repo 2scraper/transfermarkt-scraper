@@ -2,6 +2,324 @@
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] — 2026-09-17
+
+The release in which the **primary** path was finally exercised: a live AWS
+WAF captcha, met and cleared by the Scraping Browser's own auto-solve, with a
+control proving the block does not lift by itself. Also the release in which
+several sentences this repo had been repeating turned out to be wrong.
+
+### Corrected
+
+> **v1.0.0 shipped a diagnosis that was wrong.** It said the Scraping
+> Browser zone "refuses CONNECT selectively by host", called that an
+> account/zone matter to raise with support, and stated there was nothing to
+> fix in this repo. The symptom was real; the explanation was not
+> established, and the conclusion it led to — that the documented primary
+> path could not be made to work from here — was wrong.
+>
+> **The Browser API works.** Measured 2026-09-17 through `--cdp-endpoint`:
+> 25 rows, `status=complete`, 25/25 priced, `Captcha.setAutoSolve enabled`.
+>
+> What is measured about the cause: one browser account on this key has
+> `proxyMode: "none"` with `proxyAccountId: null`, and its default profile
+> inherits that — no exit, so nothing to tunnel through. A second account
+> has `proxyMode: "our_proxy"` against a live proxy account, and pointing
+> `.env` at it worked on the first attempt. **That this explains the
+> original failures is an inference, not an observation**: the endpoint that
+> was in `.env` then was never hand-edited and predates both accounts, so
+> which one it addressed cannot be recovered. It is a good inference. It is
+> not a measurement, and it is not written here as one.
+
+### Added
+
+- **`tools/browser_profile_client.py`** — lists browser accounts, proxy
+  accounts and profiles, and puts a ready `connectionUri` into `.env`
+  (`use --account-id N --write-env`), so the endpoint never passes through a
+  terminal or a shell history. It refuses to write one for an account whose
+  `proxyMode` is `"none"`, and says why.
+- README now documents the Browser API as **obtained, not assembled**, with
+  the `proxyMode` table and the one command that shows which mode an account
+  is in.
+- TROUBLESHOOTING gains `ERR_TUNNEL_CONNECTION_FAILED over --cdp-endpoint`
+  and `401 deny_no_user` / `401 Wrong user name format`, so both are
+  findable by pasting the error.
+- 16 offline checks covering the new client: a synthetic `HTTPError`,
+  `ConnectionError` and `Timeout` each carrying `?key=<32 hex>` must lose the
+  key in redaction — the GET endpoints take the key as a query parameter and
+  `requests` puts the whole URL into the text of every one of those — and
+  `safe()` must strip `password`, `login` and `connectionUri` from a fixture
+  shaped like the real response, which is an object keyed `"0"`, `"1"`, …
+  rather than an array.
+
+### Fixed
+
+- **`mask_url()` could raise on exactly the input that most needed masking.**
+  It read `urlparse(...).port` bare; `urlparse` computes the port lazily and
+  raises `ValueError` on a malformed authority, so the masker blew up and its
+  caller was left holding the raw URI. This is the defect `proxy_pool.mask()`
+  already documents as having put a live proxy login and password into a
+  public CI log on a sibling repo, reintroduced in a new file. Now defensive
+  in the same shape, and pinned by checks over five malformed inputs.
+
+### Removed
+
+- `tools/cdp_with_proxy.py`, which assembled the `-proxy-{base64url}` segment
+  by hand. It did not work, and the API returns a ready `connectionUri`
+  anyway. The finding is kept: measured 2026-09-17 against the live endpoint,
+  three encodings of the same proxy URL — padding stripped gave
+  `401 deny_no_user`, padding kept as `=` and padding as `%3D` both gave
+  `401 Wrong user name format`. Two distinct errors, and the last two agree,
+  so the complaint is about the username as a whole rather than the base64
+  inside it. The vendor's one documented example encodes a 39-byte URL, a
+  multiple of 3, so it needs no padding and cannot demonstrate the case.
+
+### The AWS WAF solve, finally exercised — and the primary path was losing a race
+
+**v1.0.0 and everything before it said the AWS WAF solve had never run
+against a live challenge. It has now, and the repo had the two paths the
+wrong way round.**
+
+This project documents 2Captcha's Scraping Browser API (`--cdp-endpoint`,
+`Captcha.setAutoSolve`) as the PRIMARY way a challenge is cleared, with the
+solver API behind it as the fallback. The code did the opposite: on
+detection it called the paid solver immediately. Measured 2026-09-17 on a
+live AWS WAF captcha over the Browser API:
+
+```
+03:06:43  AWS WAF captcha found                      (the engine's detector)
+03:07:35  2captcha returned existing_token           (~50s in the FALLBACK)
+03:07:35  [Scraping Browser] CAPTCHA detected        (the primary, only now)
+03:07:35  Set aws-waf-token — reloading
+03:07:43  Blocked by AWS WAF
+```
+
+`Captcha.solveFinished` never arrived, because the fallback's reload had
+already moved the page out from under the auto-solver. Three defects, each
+measured and each fixed:
+
+- **The fallback fired on detection.** The engine now waits for
+  `Captcha.solveFinished` before offering anything to the solver API. The
+  Captcha CDP events are counted rather than only logged — without somewhere
+  to record them there was nothing to wait on.
+- **The first wait budget was too short.** 45s, against a measured auto-solve
+  time of 30–96s, so it timed out a minute early and the paid call ran
+  anyway; its answer and `solveFinished` landed in the same second. Now 180s,
+  twice the worst measured figure.
+- **Reloading after a successful solve destroyed the result.** The
+  auto-solver navigates the page itself once it has the token, and a reload
+  issued alongside that returns `net::ERR_ABORTED; maybe frame was
+  detached?` — measured one second after a `solveFinished` that had genuinely
+  worked, leaving the run to parse a detached frame and report zero rows. The
+  engine now waits for the page to paint, using the same polled count every
+  other readiness wait uses.
+
+**Result, with a control.**
+
+| | Challenges met | Outcome |
+|---|---|---|
+| Control — `--no-autosolve`, nothing solving | 1 | **0 of 8** reloads cleared it |
+| Primary path — auto-solve on | 5 | **5 of 5** → `solveFinished` → 25 rows, 25/25 priced, `status=complete` |
+
+Auto-solve times: 30.0s, 51.5s, 58.0s, 63.0s, ~34s. The solver API was not
+called in any of them. Cost is $0.00145 per solve, charged for the auto-solve
+itself.
+
+The control is what makes this a finding rather than a hope: section 19's
+rule is that a block expiring on its own produces exactly the observation
+"we solved it and the page came back". Here the same endpoint, on the same
+site, with nothing solving, stayed blocked through eight consecutive
+reloads.
+
+### Added
+
+- **`--no-autosolve`** on the two CDP-capable engines. It exists to make the
+  control above possible: it lets a challenge be MET and left unsolved. It
+  is a measurement mode, not a way to run a scrape, and says so.
+
+### Fixed
+
+- **AWS WAF has two rule actions, and this repo treated both as a captcha.**
+
+  | Action | HTTP | `x-amzn-waf-action` | `captcha.js` | Body |
+  |---|---|---|---|---|
+  | CAPTCHA | 405 | `captcha` | present | 9.7–14 KB |
+  | Challenge | 202 | `challenge` | absent | 2,409 bytes |
+
+  Both carry `window.gokuProps`, so reading the props cannot tell them
+  apart; the presence of `captcha.js` can, and the detector was already
+  parsing it without using it. A challenge-action page renders no widget —
+  section 19's "unsolvable is a property of a PAGE" — so sending one to a
+  solver buys a token for a puzzle that was never there. `createTask`
+  validates little enough to take the money: a fabricated task was accepted
+  and charged. All three engines now refuse to send a widget-less AWS WAF
+  page to the solver API, and the log names which action it is.
+
+- **`AmazonTaskProxyless` was the wrong task type whenever the run has an
+  exit.** It solves from 2Captcha's own address, which was not the address
+  being challenged, so it returned `existing_token` and no
+  `captcha_voucher` — $0.00145 for a token that cleared nothing, repeatedly.
+  `AmazonTask` is the documented proxy-carrying variant
+  (2captcha.com/api-docs/amazon-aws-waf-captcha, read 2026-09-17): the same
+  fields plus `proxyType`, `proxyAddress`, `proxyPort` required and
+  `proxyLogin`/`proxyPassword` optional. Given the page's own exit it
+  returned a real voucher in ~20–25s. The engines now pass their current
+  exit to the solver and the type is chosen from that.
+
+### Fixed — the proxy filename trap, and a check that was red for the wrong reason
+
+- **The project's own examples named files `.gitignore` did not protect.**
+  `playwright_scraper.py`'s docstring passed `--proxy-file` a file called
+  `proxies.txt`, and the README passed it one called `exits.txt`, while
+  `.gitignore` protected the literal `proxylist.txt` and nothing else.
+  (Written this way round on purpose: the suite check added below reads
+  every `--proxy-file <name>` in the project's own files and demands git
+  refuse that name, and it fires on this entry too if the old examples are
+  quoted verbatim. Reword rather than allowlist — an allowlist is how a scan
+  stops covering the thing it was written for.) Both were measured with
+  `git check-ignore`, not by reading `.gitignore`: both came back
+  committable. Anyone following our own example made an unignored file with
+  a login and a password on every line. All documentation now names
+  `proxylist.txt`, and the pattern is `proxylist*.txt` — wide enough for the
+  variants people make, narrow enough that `requirements.txt` and
+  `sample_output.csv` still commit. A broader shape such as `*proxy*.txt`
+  would swallow files someone meant to keep, and `.gitignore` has no undo.
+
+- **`ci_checks.py --secret` was red on a file it is not about.** Its claim is
+  "no credentials **committed**", but it walked the whole directory and
+  scanned gitignored files too, so the maintainer's own local
+  `proxylist.txt` turned it red while CI — which never has that file —
+  stayed green. A check that is permanently red for a reason nobody can fix
+  is one everybody learns to ignore. It now asks `git check-ignore` which
+  paths would be committed and skips the rest, saying how many it skipped.
+  One subprocess for the whole list via `--stdin -z`, which also keeps
+  filenames with spaces intact — this repo lives under a path with one.
+
+  It degrades to scanning everything, silently and without a traceback, both
+  outside a git repository and with `git` absent from `PATH`. This project
+  ships as a zip as often as it is cloned, and a guard that takes the check
+  down is worse than the gap it closes. All three states are pinned by
+  checks.
+
+  The startup guard originally sketched for this was dropped on the work
+  order's own instruction: it was scaffolding for a file the documented
+  default path no longer needs, now that a pool is generated from one
+  credential rather than read from disk.
+
+*Verified by regression:* reintroducing `proxies.txt` into the docstring
+turns the suite red on that exact name, and removing it turns it green
+again. A check that cannot fail proves nothing.
+
+### Fixed — a duplicate key in `.env` answered differently per installed package
+
+`load_env()` defers to `python-dotenv` when it can be imported and falls back
+to its own parser otherwise, and `python-dotenv` is not in
+`requirements.txt`. Measured 2026-09-17 on a fixture with three consecutive
+`TRANSFERMARKT_PROXY` lines, through the DEFAULT `override=False`:
+
+```
+hand-rolled parser  ->  the FIRST value
+python-dotenv       ->  the LAST value
+```
+
+Same file, same command, a different exit, and no error either way. The
+hand-rolled loop assigned straight into `os.environ` and skipped any key
+already present, so the first line won as soon as it had been assigned.
+
+Fixed by **reporting**, the way `unknown_keys()` already reports a typo, and
+by collapsing the file before consulting the environment so both branches
+agree on the LAST occurrence — python-dotenv's answer and the shell
+convention. The documented precedence is unchanged: a real environment
+variable still beats the file. The warning names the key, every line it was
+set on, and which line won; a duplicated secret is reported by key and line
+and never by value.
+
+The neighbours were checked at the same time, since two parsers that
+disagree on duplicates may disagree elsewhere: an empty value, a quoted
+value and an unquoted value with a trailing comment parse identically in
+both.
+
+*Verified* with one fixture driven through both branches, the ImportError
+half forced by patching `sys.meta_path` rather than by hoping the package is
+absent — a test that is green exactly where it proves nothing is worse than
+no test.
+
+### Corrected — the profile lifetime figure was inherited, not measured
+
+The family template said a Scraping Browser profile's credentials "live
+about a day" and derived from that the rule never to paste a working
+endpoint into a README or a workflow. The figure carried no date, no method
+and no citation, and it had propagated into a shipped file here:
+`tools/verify_browser_api.sh` told users a 401 meant a day-old endpoint.
+
+The vendor's Browser API documentation, read 2026-09-17, says:
+
+> Profiles are stored for 90 days from creation, or until deleted by the
+> user.
+
+and the credentials do not expire on a timer; they are regenerated manually.
+Measured against the live API the same day: a profile record carries
+`createdAt` and `deletedAt` and **no expiry field**, and the connection
+string came back byte-identical across three consecutive fetches, so it is
+not reissued per request either.
+
+**The rule was right and its reasoning was backwards.** An endpoint in a
+public file is not a line that goes stale in a day — it is a live credential
+that stays live, which is a stronger reason to keep it out. The shipped
+script now says a 401 is a malformed or superseded login and points at the
+client that fetches a fresh one.
+
+### Measured, and NOT concluded
+
+- **Applying a voucher by hand is still unsolved.** 2Captcha's documentation
+  does not say how the solution reaches the site, and the how-to says to
+  read the target's own code. AWS documents the token as the `aws-waf-token`
+  cookie, also readable from an `x-aws-waf-token` header. A voucher placed
+  in that cookie from a plain HTTP client did not clear the page. This does
+  not matter on the primary path, where the browser's own extension does the
+  applying — but it is why the fallback's own end-to-end path remains
+  unproven.
+
+- **A session segment does not reliably pin one exit address.** Ten sessions
+  gave ten distinct addresses, which is what the generated pool rests on and
+  it holds. But ONE session checked eight times in a row answered from two
+  different addresses. The `sessTime-10` window is minutes — the same
+  segment held at +2 minutes and had moved by +12 — yet it is not absolute
+  within the window either. Any claim that "a worker owns one exit for its
+  lifetime" is therefore too strong, and two WAF experiments were void
+  before this was noticed, because they had treated a session label as an
+  address.
+
+### Measured
+
+| Path | Result | When |
+|---|---|---|
+| Browser API, `--cdp-endpoint` | 25 rows, `status=complete`, 25/25 priced, `setAutoSolve enabled` | 2026-09-17 |
+| 2Captcha proxy product, `--proxy-file` over 55 session-pinned exits | 25 rows, 100% price coverage | 2026-09-17 |
+| `smoke_test.py`, Playwright installed | 509 checks | 2026-09-17 |
+
+### Still open
+
+**The AWS WAF solve has still never run against a live challenge.** No
+challenge has appeared to solve, so the end-to-end path remains unexercised.
+That is "not yet exercised" — not a verdict on the solver.
+
+The challenge tally by position, each row tied to the run that produced it
+rather than summed into one figure:
+
+| Exit | Requests | Challenged | When |
+|---|---|---|---|
+| Maintainer's home connection | 10 | 0 | 2026-09-16 |
+| Maintainer's home connection | 10 | 0 | 2026-09-17 |
+| Proxied exits `us` / `de` / `in` / `br` | 5 | 0 | 2026-09-16 |
+| Proxy pool (55 session-pinned exits) | one 25-row run | 0 | 2026-09-17 |
+| Browser API exit | one 25-row run | 0 | 2026-09-17 |
+
+One of the five proxied requests ran with TLS impersonation off. A
+**datacentre** address — the one class of exit the 8-of-10 figure in this
+repo's history came from — has still not been retried; whether the account
+offers that type has not been established.
+
 ## [1.0.0] — 2026-09-16
 
 First release in which **every engine, and the container, have been run

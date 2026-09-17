@@ -101,8 +101,12 @@ fi
 
 echo "=== 3. TEST — through the Scraping Browser API ==="
 echo "   (a profile allows ONE live connection; if this 500s, another run"
-echo "    still holds that pid. Profile credentials also expire in about a"
-echo "    day — a 401 here usually means a stale endpoint, not a bug.)"
+echo "    still holds that pid. A 401 here is a malformed or superseded"
+echo "    login, not an expired one: the vendor documents profiles as stored"
+echo "    90 days from creation or until deleted, and the credentials"
+echo "    themselves do not expire on a timer. Fetch a fresh connectionUri"
+echo "    with tools/browser_profile_client.py rather than editing the"
+echo "    string.)"
 bounded 300 python3 playwright_scraper.py --mode market-values --pages 1 \
     --out "$LOGS/viacdp" --format json > "$LOGS/viacdp.log" 2>&1
 cdp_rc=$?

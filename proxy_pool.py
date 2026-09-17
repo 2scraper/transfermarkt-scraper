@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import logging
 import random
+import re
+import string
 from typing import List, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger("proxy_pool")
 
@@ -143,7 +145,21 @@ def mask(url: Optional[str]) -> str:
             port = ":?"
         creds = "***:***@" if (parsed.username or parsed.password) else ""
         scheme = parsed.scheme or "?"
-        return f"{scheme}://{creds}{host}{port}"
+        # On a 2Captcha gateway every minted exit shares one host, one port
+        # and one password -- the SESSION segment is the only thing telling
+        # them apart. Without it three genuinely different exits log as three
+        # identical lines, and a rotation log that cannot distinguish exits
+        # is exactly the "looks like a pool, logs like a pool" failure this
+        # feature has to avoid. The id is a per-run label, not the secret;
+        # the password is still gone.
+        tail = ""
+        try:
+            session = _SESSION_RE.search(parsed.username or "")
+            if session and host.endswith(_GATEWAY_SUFFIX):
+                tail = f" ({session.group(0).lstrip('-')})"
+        except Exception:  # noqa: BLE001 -- never let the label break the mask
+            tail = ""
+        return f"{scheme}://{creds}{host}{port}{tail}"
     except Exception:  # noqa: BLE001 — a masker that raises is worse than a
         # vague one. Something is already wrong with this value; say so
         # without repeating it.
@@ -271,6 +287,95 @@ class ProxyPool:
         return self.rotate == "per-page"
 
 
+# ---------------------------------------------------------------------------
+# Generating a pool from ONE credential (2Captcha's gateway convention)
+# ---------------------------------------------------------------------------
+# This is vendor-specific and deliberately kept here rather than applied to
+# any `--proxy` URL. 2Captcha's residential gateway takes a `-session-{id}`
+# segment inside the LOGIN and pins that session to one exit address for
+# `-sessTime-{minutes}`; a different id is a different exit through the same
+# gateway, host and password.
+#
+# MEASURED before this was written, because the whole idea rests on it:
+# 2026-09-17, ten logins differing only in their session segment, one request
+# each to an IP echo service -- ten answers, TEN DISTINCT ADDRESSES, no
+# repeats. If the gateway had ignored the segment the result would have been
+# twenty names for one IP: a pool that looks like a pool, logs like a pool,
+# and quietly concentrates every request on one exit. That is worse than a
+# file, which is why the check comes first and why the number is recorded.
+_GATEWAY_SUFFIX = ".proxy.2captcha.com"
+_SESSION_RE = re.compile(r"-session-[A-Za-z0-9]+")
+_SESSTIME_RE = re.compile(r"-sessTime-\d+")
+# Nine characters, matching the ids the vendor's own exported list uses.
+_SESSION_CHARS = string.ascii_letters + string.digits
+_SESSION_LEN = 9
+
+
+def is_2captcha_gateway(url: Optional[str]) -> bool:
+    """Is this one of 2Captcha's proxy gateways, where minting applies?"""
+    if not url:
+        return False
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host.endswith(_GATEWAY_SUFFIX)
+
+
+def _session_id(rng: random.Random) -> str:
+    return "".join(rng.choice(_SESSION_CHARS) for _ in range(_SESSION_LEN))
+
+
+def with_session(url: str, session: str) -> str:
+    """The same proxy URL with its login pinned to `session`.
+
+    The rest of the login is left ALONE. A credential exported from the
+    dashboard already carries `-zone-...-region-...` and often a session of
+    its own; rebuilding the login from parts would drop whichever segment
+    nobody thought of, so this replaces the session in place, or appends one
+    before `-sessTime-` when there is none.
+    """
+    parts = urlparse(url)
+    login = parts.username or ""
+    if _SESSION_RE.search(login):
+        new_login = _SESSION_RE.sub("-session-" + session, login, count=1)
+    elif _SESSTIME_RE.search(login):
+        new_login = _SESSTIME_RE.sub("-session-" + session + r"\g<0>", login, count=1)
+    else:
+        new_login = login + "-session-" + session
+    password = parts.password or ""
+    host = parts.hostname or ""
+    port = f":{parts.port}" if parts.port else ""
+    netloc = f"{new_login}:{password}@{host}{port}" if password else f"{new_login}@{host}{port}"
+    return urlunparse((parts.scheme, netloc, parts.path, parts.params,
+                       parts.query, parts.fragment))
+
+
+def mint_sessions(url: str, count: int, rng: Optional[random.Random] = None) -> List[str]:
+    """`count` copies of one gateway credential, each on its own session.
+
+    Ids are unique within the run by construction: a collision would be two
+    workers sharing an exit while the log claimed otherwise, which is the
+    failure this whole idea has to avoid.
+    """
+    if count < 1:
+        raise ProxyError("--proxy-sessions must be 1 or more")
+    if not is_2captcha_gateway(url):
+        raise ProxyError(
+            "--proxy-sessions only applies to a 2Captcha proxy gateway "
+            f"(a host under {_GATEWAY_SUFFIX}); the URL given is not one. "
+            "Use --proxy-file for proxies from anywhere else.")
+    rng = rng or random.Random()
+    seen, out = set(), []
+    while len(out) < count:
+        sid = _session_id(rng)
+        if sid in seen:
+            continue
+        seen.add(sid)
+        out.append(with_session(url, sid))
+    return out
+
+
 def from_args(args) -> Optional[ProxyPool]:
     """Build a pool from --proxy-file / --proxy, or None if neither is set.
 
@@ -281,6 +386,17 @@ def from_args(args) -> Optional[ProxyPool]:
     proxy_file = getattr(args, "proxy_file", None)
     single = getattr(args, "proxy", None)
     rotate = getattr(args, "proxy_rotate", "per-run")
+    sessions = getattr(args, "proxy_sessions", None)
+
+    if sessions and single and not proxy_file:
+        proxies = mint_sessions(single, sessions)
+        logger.info("Minted %d session-pinned exit(s) from one %s credential, "
+                    "rotation: %s", len(proxies), mask(single), rotate)
+        return ProxyPool(proxies, rotate=rotate,
+                         shuffle=getattr(args, "proxy_shuffle", False))
+    if sessions and proxy_file:
+        logger.warning("--proxy-sessions is ignored when --proxy-file is given: "
+                       "the file already names the exits.")
 
     if proxy_file:
         if single:

@@ -100,6 +100,67 @@ def _parse_line(line):
     return key, value
 
 
+def _is_secret(key, value=""):
+    """Should this value be kept out of a log line?
+
+    The same rule `python3 env_config.py` already prints by: a key whose name
+    says it holds a credential, or a value carrying `user:pass@`. Erring
+    towards hiding -- a duplicate warning names the KEY and the line numbers,
+    which is all an operator needs to go and delete the extra lines.
+    """
+    name = str(key).upper()
+    if any(w in name for w in ("KEY", "TOKEN", "PASSWORD", "SECRET")):
+        return True
+    return "@" in str(value)
+
+
+def duplicate_keys(path=None):
+    """{key: [(line number, value), ...]} for every key set more than once.
+
+    A duplicate is not a style problem here, it is an ambiguity that used to
+    resolve differently depending on what happened to be installed. Measured
+    2026-09-17 on a fixture with three consecutive TRANSFERMARKT_PROXY lines,
+    through `load_env()` with its default `override=False`:
+
+        hand-rolled parser  ->  the FIRST value
+        python-dotenv       ->  the LAST value
+
+    Same file, same command, a different exit, and no error either way --
+    because `python-dotenv` is not in requirements.txt, so which branch runs
+    is an accident of the environment. The neighbours were checked at the
+    same time and do agree: an empty value, a quoted value and an unquoted
+    value with a trailing comment all parse identically in both.
+    """
+    if path is None:
+        path = Path(__file__).resolve().parent / ".env"
+    path = Path(path)
+    if not path.is_file():
+        return {}
+    seen = {}
+    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        parsed = _parse_line(raw)
+        if parsed:
+            seen.setdefault(parsed[0], []).append((lineno, parsed[1]))
+    return {k: v for k, v in seen.items() if len(v) > 1}
+
+
+def _report_duplicates(path):
+    """Say which line won, rather than silently picking one.
+
+    The same shape as `unknown_keys()`: the loader does not get to decide
+    what the operator meant, but it must not hide that there was a choice.
+    """
+    for key, occurrences in duplicate_keys(path).items():
+        where = ", ".join(str(lineno) for lineno, _ in occurrences)
+        winner_line, winner_value = occurrences[-1]
+        shown = "(hidden)" if _is_secret(key, winner_value) else repr(winner_value)
+        logger.warning(
+            "%s is set %d times in %s (lines %s) — the LAST one, line %d, "
+            "wins: %s. Delete the others; a duplicate here used to resolve "
+            "differently depending on whether python-dotenv was installed.",
+            key, len(occurrences), path, where, winner_line, shown)
+
+
 def load_env(path=None, override=False):
     """Load `.env` into os.environ. Returns the path used, or None.
 
@@ -115,6 +176,10 @@ def load_env(path=None, override=False):
     if not path.is_file():
         return None
 
+    # Reported before either parser runs, so the warning does not depend on
+    # which branch is taken -- the branch is exactly what was unreliable.
+    _report_duplicates(path)
+
     # Defer to python-dotenv when the user already has it: their version may
     # support syntax this parser does not (multi-line values, interpolation).
     try:
@@ -126,13 +191,24 @@ def load_env(path=None, override=False):
     except ImportError:
         pass
 
-    count = 0
+    # LAST occurrence wins, matching python-dotenv and the shell convention.
+    # This loop used to assign straight into os.environ and skip any key
+    # already there, which with the default `override=False` made the FIRST
+    # line win as soon as the first assignment had happened -- the divergence
+    # documented on `duplicate_keys`. Collapsing the file first, and only
+    # then consulting the pre-existing environment, keeps the documented
+    # precedence (a real environment variable beats the file) while giving
+    # the same answer as the other branch.
+    preset = set() if override else set(os.environ)
+    collapsed = {}
     for raw in path.read_text(encoding="utf-8").splitlines():
         parsed = _parse_line(raw)
-        if not parsed:
-            continue
-        key, value = parsed
-        if key in os.environ and not override:
+        if parsed:
+            collapsed[parsed[0]] = parsed[1]
+
+    count = 0
+    for key, value in collapsed.items():
+        if key in preset:
             continue
         os.environ[key] = value
         count += 1

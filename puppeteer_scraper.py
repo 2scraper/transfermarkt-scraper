@@ -192,6 +192,11 @@ class _Session:
             # `debuggerAddress` takes a bare host:port with nowhere to put a
             # password, so it cannot reach an authenticated endpoint at all
             # (see the README's engine limits).
+            if getattr(self.args, "no_autosolve", False):
+                logger.warning("--no-autosolve: Captcha.setAutoSolve NOT "
+                               "enabled. Challenges are left unsolved; this "
+                               "is a measurement mode, not a way to scrape.")
+                return self
             try:
                 session = self.bridge.run(self.page.target.createCDPSession())
                 self.bridge.run(session.send(
@@ -328,7 +333,8 @@ def _next_page_href(session) -> Optional[str]:
         "a[rel='next']\"); return a ? (a.href || a.getAttribute('href')) : null; }"))
 
 
-def handle_captcha_if_present(session, args, ready_selector: str) -> bool:
+def handle_captcha_if_present(session, args, ready_selector: str,
+                              proxy=None) -> bool:
     bridge, page = session.bridge, session.page
     html = _driver(session)["content"]()
     if html is None:
@@ -354,6 +360,21 @@ def handle_captcha_if_present(session, args, ready_selector: str) -> bool:
         logger.info("%s detected via %s, but content is already on the "
                     "page — not solving it.", challenge.kind, challenge.source)
         return False
+    # Section 19: "unsolvable" is a property of a PAGE -- it means the page
+    # carries no widget. An AWS WAF CHALLENGE-action page is exactly that:
+    # challenge.js only, no puzzle rendered, nothing for a solver to work
+    # on. Sending it anyway buys a token for a widget that was never there,
+    # and `createTask` validates little enough to take the money. A browser
+    # that runs the script passes this by itself, which is why the wait
+    # above is still the right thing to do for it.
+    if challenge.is_aws_waf and not challenge.has_captcha_widget:
+        logger.info("AWS WAF %s action and no captcha widget on the page — "
+                    "not sending this to the solver API. A browser passes "
+                    "this by running the script; if it did not, the exit is "
+                    "the variable here, not the solver.",
+                    challenge.aws_waf_action)
+        return False
+
     logger.warning("%s detected via %s (sitekey=%s) — attempting to solve.",
                    challenge.kind, challenge.source, challenge.sitekey)
     if not args.twocaptcha_key:
@@ -364,7 +385,8 @@ def handle_captcha_if_present(session, args, ready_selector: str) -> bool:
     try:
         token = solve_recaptcha(challenge, args.twocaptcha_key,
                                 api_version=args.captcha_api,
-                                min_score=args.min_score)
+                                min_score=args.min_score,
+                               proxy=proxy)
     except Exception as e:  # noqa: BLE001
         logger.error("Solving the challenge failed (%s).", e)
         return False
@@ -427,7 +449,8 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         if load_failed:
             break
 
-        if handle_captcha_if_present(session, args, ready_selector):
+        if handle_captcha_if_present(session, args, ready_selector,
+                                    proxy=pool.current if pool else None):
             time.sleep(1)
 
         html = d["content"]() or ""
@@ -650,6 +673,13 @@ def parse_args():
     p.add_argument("--proxy", default=None)
     p.add_argument("--proxy-file", default=None)
     p.add_argument("--proxy-rotate", choices=list(ROTATE_MODES), default="per-run")
+    p.add_argument("--no-autosolve", action="store_true",
+                   help="Do not enable Captcha.setAutoSolve on a "
+                        "--cdp-endpoint session (measurement mode: it "
+                        "lets a challenge be met and left unsolved, "
+                        "which is what a control needs).")
+    p.add_argument("--proxy-sessions", type=int, default=None,
+                   help="With --proxy pointing at a 2Captcha proxy gateway, mint this many session-pinned exits from that one credential instead of keeping a file of them. Each session is a different exit address (measured 2026-09-17: ten sessions, ten distinct addresses). Has no effect with --proxy-file, and is refused for a non-2Captcha host.")
     p.add_argument("--proxy-shuffle", action="store_true")
     p.add_argument("--proxy-block-retries", type=int, default=2)
     p.add_argument("--twocaptcha-key", default=None)

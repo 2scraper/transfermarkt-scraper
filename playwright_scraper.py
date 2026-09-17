@@ -55,7 +55,7 @@ Usage
     python playwright_scraper.py --mode club-squad --club-id 281 --season 2025
 
     python playwright_scraper.py --mode transfers --pages 5 --concurrency 3 \\
-        --proxy-file proxies.txt
+        --proxy-file proxylist.txt
 
     python playwright_scraper.py --mode player --player-id 418560
 
@@ -253,16 +253,94 @@ def _connect_remote(pw, args):
         ) from None
     context = browser.contexts[0] if browser.contexts else browser.new_context()
     page = context.new_page()
+    # Counters, not just log lines. Measured 2026-09-17 on a live AWS WAF
+    # captcha over this endpoint: the engine's own detector fired, spent ~50s
+    # in the PAID solver API, set a cookie and reloaded -- and only then did
+    # `Captcha.detected` arrive. `Captcha.solveFinished` never did, because
+    # the reload had already moved the page under the auto-solver's feet.
+    # The Scraping Browser's auto-solve is the PRIMARY path here and the
+    # solver API is the fallback; without somewhere to record these events
+    # there is no way for the fallback to wait its turn.
+    autosolve = {"enabled": False, "detected": 0, "finished": 0, "failed": 0}
+    page.autosolve = autosolve
+    if getattr(args, "no_autosolve", False):
+        # Deliberately NOT enabling it. This exists so a challenge can be met
+        # and left unsolved, which is the only way to measure how often one
+        # clears on its own -- the control the family's section 19 requires
+        # before a solve may be credited with anything. Without it, every
+        # challenge this endpoint meets is solved before it can be observed.
+        logger.warning("--no-autosolve: Captcha.setAutoSolve NOT enabled. "
+                       "Challenges will be left unsolved. This is a "
+                       "measurement mode, not a way to run a scrape.")
+        return browser, context, page
     try:
         cdp_session = context.new_cdp_session(page)
         cdp_session.send("Captcha.setAutoSolve", {"autoSolve": True, "options": [{"type": "*"}]})
-        cdp_session.on("Captcha.detected", lambda *_: logger.info("[Scraping Browser] CAPTCHA detected on page."))
-        cdp_session.on("Captcha.solveFinished", lambda *_: logger.info("[Scraping Browser] CAPTCHA solved automatically."))
-        cdp_session.on("Captcha.solveFailed", lambda *_: logger.warning("[Scraping Browser] CAPTCHA auto-solve failed."))
+
+        def _on(event, level):
+            def handler(*_):
+                autosolve[event] += 1
+                level("[Scraping Browser] CAPTCHA %s (%d).", event, autosolve[event])
+            return handler
+
+        cdp_session.on("Captcha.detected", _on("detected", logger.info))
+        cdp_session.on("Captcha.solveFinished", _on("finished", logger.info))
+        cdp_session.on("Captcha.solveFailed", _on("failed", logger.warning))
+        autosolve["enabled"] = True
         logger.info("Scraping Browser API Captcha.setAutoSolve enabled.")
     except Exception as e:
         logger.info("Captcha.setAutoSolve not available on this --cdp-endpoint (%s).", e)
     return browser, context, page
+
+
+# How long to let the Scraping Browser's own auto-solver work before the paid
+# solver API is offered the challenge.
+#
+# MEASURED on a live AWS WAF captcha over this endpoint, 2026-09-17:
+#   detected  -> +1s after the engine's own detector fired
+#   finished  -> +96s after detected
+# A first attempt used 45s and timed out one minute early, so the paid
+# fallback ran anyway and its answer landed in the same second as the
+# auto-solver's -- two events one second apart, nothing attributable, and
+# $0.00290 spent for it. 180s is twice the measured figure, because the cost
+# of waiting too long is latency and the cost of waiting too little is money
+# plus a reload that moves the page out from under the primary path.
+AUTOSOLVE_WAIT_MS = 180_000
+AUTOSOLVE_POLL_MS = 500
+
+
+def wait_for_autosolve(page, ready_selector: str) -> bool:
+    """Give the Scraping Browser's auto-solver its turn. True if it cleared.
+
+    Returns False when there is no auto-solver, when it reports failure, or
+    when the budget runs out -- in all three cases the caller falls back to
+    the solver API, which is what the fallback is for.
+    """
+    state = getattr(page, "autosolve", None)
+    if not state or not state.get("enabled"):
+        return False
+    waited = 0
+    logger.info("Waiting up to %.0fs for the Scraping Browser's own auto-solve "
+                "before offering this to the solver API.", AUTOSOLVE_WAIT_MS / 1000)
+    while waited < AUTOSOLVE_WAIT_MS:
+        if state["finished"]:
+            logger.info("Auto-solve reported solveFinished after %.1fs — the "
+                        "primary path cleared it, nothing was charged to the "
+                        "solver API.", waited / 1000)
+            return True
+        if state["failed"]:
+            logger.warning("Auto-solve reported solveFailed after %.1fs — "
+                           "falling back to the solver API.", waited / 1000)
+            return False
+        try:
+            page.wait_for_timeout(AUTOSOLVE_POLL_MS)
+        except Exception:  # noqa: BLE001 -- a navigating page is not a failure
+            time.sleep(AUTOSOLVE_POLL_MS / 1000)
+        waited += AUTOSOLVE_POLL_MS
+    logger.info("Auto-solve did not report solveFinished within %.0fs "
+                "(detected=%d) — falling back to the solver API.",
+                AUTOSOLVE_WAIT_MS / 1000, state["detected"])
+    return False
 
 
 def _resolve_pagination_url(base_url: str, href: str) -> str:
@@ -292,7 +370,8 @@ def _content_when_settled(page, attempts: int = 4, pause_ms: int = 700):
     return None
 
 
-def handle_captcha_if_present(page, args, ready_selector: str) -> bool:
+def handle_captcha_if_present(page, args, ready_selector: str,
+                              proxy=None) -> bool:
     """Detect and solve a challenge. True if something was solved.
 
     See captcha_solver.py's closing note: no challenge of this kind was
@@ -327,6 +406,50 @@ def handle_captcha_if_present(page, args, ready_selector: str) -> bool:
                     "it anyway.", challenge.kind, challenge.source)
         return False
 
+    # PRIMARY path first. Over the Scraping Browser API the browser's own
+    # extension is what this repo documents as the default way to clear a
+    # challenge; the solver API behind it is the fallback. Firing the paid
+    # call on detection means the fallback always wins the race and the
+    # primary is never exercised.
+    if wait_for_autosolve(page, ready_selector):
+        # Do NOT reload here. The auto-solver navigates the page itself once
+        # it has the token, and a reload issued alongside that lands on
+        # `net::ERR_ABORTED; maybe frame was detached?` -- measured
+        # 2026-09-17, one second after a solveFinished that had genuinely
+        # worked, leaving the run to parse a detached frame and report zero
+        # rows. Wait for the content the solve was for instead, using the
+        # same polled count every readiness wait in this repo uses.
+        d = _driver(page)
+        seen = page_flow.wait_for_count(
+            d["count"], d["sleep"], ready_selector,
+            page_flow.ready_count(getattr(args, "mode", "market-values")),
+            page_flow.content_timeout_ms(getattr(args, "mode", "market-values")))
+        if seen:
+            logger.info("Page painted %d match(es) after the auto-solve.", seen)
+        else:
+            logger.info("Nothing painted after the auto-solve; reloading once.")
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=60000)
+            except (PWTimeout, PWError) as e:
+                logger.warning("Reload after auto-solve failed (%s) — "
+                               "continuing with whatever the page holds.", e)
+        return True
+
+    # Section 19: "unsolvable" is a property of a PAGE -- it means the page
+    # carries no widget. An AWS WAF CHALLENGE-action page is exactly that:
+    # challenge.js only, no puzzle rendered, nothing for a solver to work
+    # on. Sending it anyway buys a token for a widget that was never there,
+    # and `createTask` validates little enough to take the money. A browser
+    # that runs the script passes this by itself, which is why the wait
+    # above is still the right thing to do for it.
+    if challenge.is_aws_waf and not challenge.has_captcha_widget:
+        logger.info("AWS WAF %s action and no captcha widget on the page — "
+                    "not sending this to the solver API. A browser passes "
+                    "this by running the script; if it did not, the exit is "
+                    "the variable here, not the solver.",
+                    challenge.aws_waf_action)
+        return False
+
     logger.warning("%s detected via %s (sitekey=%s) — attempting to solve.",
                    challenge.kind, challenge.source, challenge.sitekey)
     if not args.twocaptcha_key:
@@ -336,7 +459,8 @@ def handle_captcha_if_present(page, args, ready_selector: str) -> bool:
     try:
         token = solve_recaptcha(challenge, args.twocaptcha_key,
                                api_version=args.captcha_api,
-                               min_score=args.min_score)
+                               min_score=args.min_score,
+                               proxy=proxy)
     except Exception as e:  # noqa: BLE001
         logger.error("Solving the challenge failed (%s) — continuing.", e)
         return False
@@ -456,7 +580,8 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         if load_failed:
             break
 
-        if handle_captcha_if_present(session.page, args, ready_selector):
+        if handle_captcha_if_present(session.page, args, ready_selector,
+                                    proxy=pool.current if pool else None):
             session.page.wait_for_timeout(1000)
 
         html = _content_when_settled(session.page) or ""
@@ -865,6 +990,15 @@ def parse_args():
                    help="File with one proxy URL per line to rotate across. "
                         "Wins over --proxy.")
     p.add_argument("--proxy-rotate", choices=list(ROTATE_MODES), default="per-run")
+    p.add_argument("--no-autosolve", action="store_true",
+                   help="Do not enable Captcha.setAutoSolve on a "
+                        "--cdp-endpoint session. A measurement mode: it lets "
+                        "a challenge be MET and left unsolved, which is what "
+                        "a control needs. Without a control, 'we solved it "
+                        "and the page came back' cannot be told apart from "
+                        "'the block expired'.")
+    p.add_argument("--proxy-sessions", type=int, default=None,
+                   help="With --proxy pointing at a 2Captcha proxy gateway, mint this many session-pinned exits from that one credential instead of keeping a file of them. Each session is a different exit address (measured 2026-09-17: ten sessions, ten distinct addresses). Has no effect with --proxy-file, and is refused for a non-2Captcha host.")
     p.add_argument("--proxy-shuffle", action="store_true")
     p.add_argument("--proxy-block-retries", type=int, default=2,
                    help="When a page comes back blocked, retry it from this "

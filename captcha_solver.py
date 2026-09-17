@@ -127,6 +127,40 @@ class CaptchaChallenge:
     def is_aws_waf(self) -> bool:
         return self.kind == "aws_waf"
 
+    @property
+    def aws_waf_action(self) -> str:
+        """Which AWS WAF rule action produced this page: captcha or challenge.
+
+        AWS WAF has TWO actions and they are not the same thing:
+
+          CAPTCHA    HTTP 405, `x-amzn-waf-action: captcha`, and the page
+                     loads captcha.js -- a real widget with a puzzle.
+          Challenge  HTTP 202, `x-amzn-waf-action: challenge`, challenge.js
+                     only -- a silent proof-of-work a browser passes by
+                     running it. No widget, nothing to show a human.
+
+        Both carry `window.gokuProps`, which is why reading the props alone
+        cannot tell them apart. `captcha.js` can. Measured on
+        www.transfermarkt.com 2026-09-17: challenge-action pages came back
+        with challengeScript present and captchaScript absent, and the
+        captcha-action pages had both.
+        """
+        return "captcha" if self.captcha_script else "challenge"
+
+    @property
+    def has_captcha_widget(self) -> bool:
+        """Is there a widget on this page for a solver to work on?
+
+        Section 19's rule: "unsolvable" is a property of a PAGE, not of a
+        vendor, and it means the page carries no widget. A challenge-action
+        page carries none, so sending it to a solver buys a token for a
+        puzzle that was never rendered -- measured at $0.00145 a time, since
+        `createTask` validates almost nothing.
+        """
+        if not self.is_aws_waf:
+            return True
+        return bool(self.captcha_script)
+
 
 # AWS WAF prints its three task parameters into an inline script as
 # `window.gokuProps = {"key": ..., "iv": ..., "context": ...}`. Matched
@@ -209,10 +243,18 @@ def detect_aws_waf(html: str, page_url: str = "") -> Optional[CaptchaChallenge]:
         challenge_script=scripts.get("challenge"),
         captcha_script=scripts.get("captcha"),
     )
-    logger.info("AWS WAF captcha found: sitekey=%s… challengeScript=%s "
-                "captchaScript=%s",
-                sitekey[:12], bool(challenge.challenge_script),
-                bool(challenge.captcha_script))
+    if challenge.has_captcha_widget:
+        logger.info("AWS WAF CAPTCHA action: sitekey=%s… challengeScript=%s "
+                    "captchaScript=True — a widget is rendered, so a solver "
+                    "has something to work on.",
+                    sitekey[:12], bool(challenge.challenge_script))
+    else:
+        logger.info("AWS WAF CHALLENGE action: sitekey=%s… challengeScript=%s "
+                    "captchaScript=False — this is the silent JS check, not "
+                    "the puzzle. No widget is rendered, so there is nothing "
+                    "here for a solver to work on; a browser that runs the "
+                    "script passes it.",
+                    sitekey[:12], bool(challenge.challenge_script))
     return challenge
 
 
@@ -524,14 +566,50 @@ def reconcile_detections(html_challenge: Optional[CaptchaChallenge],
     return runtime_challenge
 
 
-def _v2_task_for(challenge: CaptchaChallenge, min_score: float) -> dict:
+def _proxy_task_fields(proxy: Optional[str]) -> dict:
+    """The documented proxy fields for a non-proxyless task, or {}.
+
+    Names are `proxyType`, `proxyAddress`, `proxyPort`, `proxyLogin` and
+    `proxyPassword`, taken from 2captcha's own API documentation rather than
+    from this client's vocabulary -- the family rule after a sibling repo
+    shipped a capability claim built out of its own field names.
+
+    Returns {} for anything that is not a usable proxy URL, so the caller
+    falls back to the proxyless type rather than sending a half-filled task
+    the API will reject. Credentials go in the task BODY, never a URL or a
+    log line.
+    """
+    if not proxy:
+        return {}
+    try:
+        p = urlparse(proxy)
+        try:
+            port = p.port
+        except ValueError:
+            return {}
+        if not (p.scheme and p.hostname and port):
+            return {}
+        fields = {"proxyType": p.scheme, "proxyAddress": p.hostname,
+                  "proxyPort": port}
+        if p.username:
+            fields["proxyLogin"] = p.username
+        if p.password:
+            fields["proxyPassword"] = p.password
+        return fields
+    except Exception:  # noqa: BLE001 -- a bad proxy must not take the solve down
+        return {}
+
+
+def _v2_task_for(challenge: CaptchaChallenge, min_score: float,
+                 proxy: Optional[str] = None) -> dict:
     """Build the API-v2 `task` object for a challenge.
 
     Task type per variant, from https://2captcha.com/api-docs:
       * v3           -> RecaptchaV3TaskProxyless, with pageAction + minScore
       * v2 invisible -> RecaptchaV2TaskProxyless with isInvisible: true
       * v2 checkbox  -> RecaptchaV2TaskProxyless
-      * AWS WAF      -> AmazonTaskProxyless, with iv + context
+      * AWS WAF      -> AmazonTask when the page is on a proxy exit,
+                        AmazonTaskProxyless otherwise, both with iv + context
 
     The AWS WAF field names are taken from
     https://2captcha.com/api-docs/amazon-aws-waf-captcha (read 2026-09-16),
@@ -539,11 +617,26 @@ def _v2_task_for(challenge: CaptchaChallenge, min_score: float) -> dict:
     after a sibling repo shipped a README paragraph asserting a capability
     the product had had for years.
 
-    The `*Proxyless` types let 2captcha use its own IP pool. The non-proxyless
-    variants (RecaptchaV2Task) exist for when the token must be produced from
-    the same IP that will submit it; that needs proxyType/proxyAddress/
-    proxyPort/proxyLogin/proxyPassword and is not wired up here — with the
-    Scraping Browser API the page and the solve already share an exit IP.
+    The `*Proxyless` types let 2captcha use its own IP pool. That is wrong for
+    AWS WAF whenever the run is on a proxy, and it fails in a way that looks
+    like success: measured 2026-09-17 against a live challenge on a 2Captcha
+    residential exit, `AmazonTaskProxyless` came back with `existing_token`
+    and NO `captcha_voucher` — 2captcha's own exit had not been challenged,
+    so there was nothing for it to solve and it returned the site's ordinary
+    token. It cost $0.00145 and cleared nothing.
+
+    `AmazonTask` is the documented proxy-carrying variant
+    (https://2captcha.com/api-docs/amazon-aws-waf-captcha, read 2026-09-17):
+    same fields plus `proxyType`, `proxyAddress`, `proxyPort` as required and
+    `proxyLogin`/`proxyPassword` as optional. Given the same challenge and
+    the page's own exit it returned a real `captcha_voucher` in ~20s, which
+    is the difference that matters — the solve happens on the address that
+    was actually challenged.
+
+    So the type is chosen by whether this run has an exit to hand, not by
+    preference. Over the Scraping Browser API there is no local proxy URL and
+    the page and the solve already share the remote exit, so the proxyless
+    type stays correct there.
     """
     if challenge.is_aws_waf:
         task = {
@@ -553,6 +646,10 @@ def _v2_task_for(challenge: CaptchaChallenge, min_score: float) -> dict:
             "iv": challenge.iv,
             "context": challenge.context,
         }
+        exit_fields = _proxy_task_fields(proxy)
+        if exit_fields:
+            task["type"] = "AmazonTask"
+            task.update(exit_fields)
         # Both script URLs are optional per the docs, and both are page-
         # specific (they carry a per-deployment id in the hostname), so they
         # are sent when the page gave them and omitted when it did not
@@ -594,9 +691,10 @@ def _v2_task_for(challenge: CaptchaChallenge, min_score: float) -> dict:
 
 def _solve_with_2captcha_v2(api_key: str, challenge: CaptchaChallenge,
                              min_score: float = 0.7, poll_interval: int = 5,
-                             max_wait: int = 180) -> str:
+                             max_wait: int = 180,
+                             proxy: Optional[str] = None) -> str:
     """Solve via API v2: createTask, then poll getTaskResult."""
-    task = _v2_task_for(challenge, min_score)
+    task = _v2_task_for(challenge, min_score, proxy=proxy)
     logger.info("createTask: %s (sitekey=%s)", task["type"], challenge.sitekey)
 
     created = requests.post(TWOCAPTCHA_CREATE_TASK_URL,
@@ -728,7 +826,8 @@ def _solve_with_2captcha_v1(api_key: str, challenge: CaptchaChallenge,
 
 
 def solve_recaptcha(challenge: CaptchaChallenge, twocaptcha_api_key: Optional[str],
-                     api_version: str = "v2", min_score: float = 0.7) -> str:
+                     api_version: str = "v2", min_score: float = 0.7,
+                     proxy: Optional[str] = None) -> str:
     """Public entry point: solve `challenge` through 2captcha and return the token.
 
     There used to be a `use_antidetect` branch here, behind a CLI flag of the
@@ -746,8 +845,18 @@ def solve_recaptcha(challenge: CaptchaChallenge, twocaptcha_api_key: Optional[st
             "API you may not need either: Captcha.setAutoSolve can clear it "
             "inside the browser."
         )
-    solver = _solve_with_2captcha_v1 if api_version == "v1" else _solve_with_2captcha_v2
-    return solver(twocaptcha_api_key, challenge, min_score=min_score)
+    if api_version == "v1":
+        # v1 has no proxy-carrying AWS WAF form wired up here; say so rather
+        # than silently solving from the wrong address.
+        if proxy and challenge.is_aws_waf:
+            logger.warning("--captcha-api v1 cannot carry this run's exit to "
+                           "the solver, so an AWS WAF solve would be made from "
+                           "2captcha's own address and would clear nothing. "
+                           "Use the default v2 for this.")
+        return _solve_with_2captcha_v1(twocaptcha_api_key, challenge,
+                                       min_score=min_score)
+    return _solve_with_2captcha_v2(twocaptcha_api_key, challenge,
+                                   min_score=min_score, proxy=proxy)
 
 
 INJECT_TOKEN_JS = """

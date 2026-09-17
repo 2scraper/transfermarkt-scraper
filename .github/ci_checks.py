@@ -35,7 +35,7 @@ ENGINE_LIBS = ("playwright", "pyppeteer", "selenium", "webdriver_manager")
 
 CLIS = ["playwright_scraper.py", "puppeteer_scraper.py", "selenium_scraper.py",
         "scraper_api_client.py", "fingerprint_client.py", "env_config.py",
-        "diff_runs.py"]
+        "diff_runs.py", "tools/browser_profile_client.py"]
 
 SAMPLE_FILES = ("sample_output.json", "sample_output.csv")
 
@@ -81,14 +81,66 @@ HEX32_ALLOWED = ("sha", "hash", "nonce", "example", "md5", "digest", "checksum")
 SCANNED_SUFFIXES = (".py", ".md", ".txt", ".yml", ".yaml", ".example")
 
 
+def git_ignored(paths):
+    """The subset of `paths` git would refuse to commit, or an empty set.
+
+    ASK GIT rather than matching strings. `.gitignore` has patterns,
+    negations and directory scoping, so a substring test proves nothing
+    about what would actually be committed -- and this check's whole claim
+    is about what IS committed.
+
+    Two ways this must not break, because this project ships as a zip as
+    often as it is cloned:
+      * outside a git repository, and
+      * with `git` absent from PATH
+    it returns an empty set, so nothing is filtered and the scan behaves
+    exactly as it did before. A guard that takes the check down is worse
+    than the gap it closes.
+
+    One subprocess for the whole list, not one per file: `--stdin` exists
+    for this, and `-z` keeps filenames with spaces or newlines intact --
+    this repo lives under a path with a space in it.
+    """
+    paths = list(paths)
+    if not paths:
+        return set()
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(REPO), "check-ignore", "-z", "--stdin"],
+            input="\0".join(str(p) for p in paths) + "\0",
+            capture_output=True, text=True)
+    except (OSError, ValueError):
+        return set()               # no git on PATH
+    # 0 = some ignored, 1 = none ignored, 128 = not a repository.
+    if proc.returncode not in (0, 1):
+        return set()
+    return {p for p in proc.stdout.split("\0") if p}
+
+
 def scanned_files():
+    candidates = []
     for path in sorted(REPO.rglob("*")):
         if not path.is_file() or path.suffix not in SCANNED_SUFFIXES:
             continue
         if any(part in {".git", "__pycache__", ".venv", "venv"}
                for part in path.parts):
             continue
+        candidates.append(path)
+
+    # A gitignored file is by definition not committed, so flagging one is a
+    # false positive -- and a permanently red check is one everybody learns
+    # to ignore. The maintainer's own `proxylist.txt` sat on disk and turned
+    # this red while CI, which never has that file, stayed green.
+    ignored = git_ignored(candidates)
+    skipped = 0
+    for path in candidates:
+        if str(path) in ignored:
+            skipped += 1
+            continue
         yield path
+    if skipped:
+        print(f"note     {skipped} gitignored file(s) not scanned — they are "
+              f"not committed, so they cannot leak through this repo")
 
 
 def help_check():

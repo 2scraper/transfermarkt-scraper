@@ -30,7 +30,15 @@ canary_run.*
 # elsewhere", and that is deliberately not true of this repo)
 
 # --- a downloaded 2captcha proxy list is a credential file ------------------
-proxylist.txt
+# Every line of one carries a login and a password. The glob covers the
+# variants people actually make (proxylist-us.txt, proxylist.2.txt) and
+# stops there: a broader shape such as *proxy*.txt would also match a file
+# someone meant to commit, and .gitignore has no undo. Every proxy filename
+# this project's own documentation shows must match this -- checked in the
+# suite with `git check-ignore`, not by comparing strings, because
+# .gitignore has patterns, negations and directory scoping and a substring
+# match proves nothing.
+proxylist*.txt
 
 # --- caches ------------------------------------------------------------------
 __pycache__/

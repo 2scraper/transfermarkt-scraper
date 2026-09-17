@@ -173,13 +173,47 @@ python3 playwright_scraper.py --mode market-values --pages 2 \
   --cdp-endpoint "ws://{login}-zone-scraping_browser-country-gb-pid-{profileId}:{password}@cb.2captcha.com:9222"
 ```
 
-That is the endpoint's SHAPE, not a working one. A Scraping Browser
-profile's credentials are short-lived, so fetch fresh ones from your
-2Captcha dashboard and put them in `.env` as `TRANSFERMARKT_CDP_ENDPOINT` —
-every engine reads it from there, and then the flag above is not needed on
-the command line at all. `country-` picks the exit country; `pid-` is a
-profile with persistent cookies, one live connection each, so reuse a pid
-rather than minting one per run.
+That is the endpoint's SHAPE, not a working one, and nothing in this repo
+ever ships a live one — not the README, not `.env.example`, not a workflow.
+
+**Do not assemble that string by hand.** The API hands you a finished one:
+`GET /browser/accounts` returns a ready `connectionUri` for every account and
+every profile, and this repo ships the client that fetches it:
+
+```bash
+python3 tools/browser_profile_client.py accounts                  # ids and proxyMode
+python3 tools/browser_profile_client.py use --account-id N --write-env
+```
+
+`--write-env` puts the URI straight into `.env` as
+`TRANSFERMARKT_CDP_ENDPOINT` without it passing through your terminal or
+your shell history. Every engine reads it from there, so the `--cdp-endpoint`
+flag above is then unnecessary. In the shape, `country-` picks the exit
+country and `pid-` is a profile with persistent cookies — one live connection
+each, so reuse a pid rather than minting one per run.
+
+### If the Browser API connects and then every navigation fails
+
+`ERR_TUNNEL_CONNECTION_FAILED` after a clean CDP connect is almost always
+**the remote browser having no exit to tunnel through**, not your network and
+not the site. A profile's exit comes from its account's `proxyMode`:
+
+| `proxyMode` | What the profile gets |
+|---|---|
+| `none` | **No exit at all.** Nothing to tunnel through — this is the failure above. |
+| `inherit` | Whatever the account has, including `none`. |
+| `our_proxy` | A 2Captcha proxy account, named by `proxyAccountId`. |
+| `custom_proxy` | A proxy you supply. |
+
+So the first thing to check is the account's own mode:
+
+```bash
+python3 tools/browser_profile_client.py accounts
+```
+
+`use` refuses to write an endpoint for an account whose `proxyMode` is
+`none`, and says why. Pick an account with `our_proxy`, or attach a proxy to
+the one you have.
 
 The same four modes, run locally — which is all you need from an address the
 site does not challenge (`tools/waf_probe.sh` tells you whether yours is
@@ -200,7 +234,7 @@ python3 playwright_scraper.py --mode transfers --pages 5 --concurrency 4
 python3 playwright_scraper.py --mode player --player-id 418560
 
 # Through a pool of exits, if you have proxies from anywhere
-python3 playwright_scraper.py --mode transfers --pages 10 --proxy-file exits.txt
+python3 playwright_scraper.py --mode transfers --pages 10 --proxy-file proxylist.txt
 
 # The fallback: solve a challenge that reached the page anyway. The key
 # comes from TWOCAPTCHA_KEY in .env — never from argv, which `ps` can read
@@ -628,13 +662,20 @@ dump from `--dump-html` is what tells you which.
 **`--cdp-endpoint` connects, `Captcha.setAutoSolve` reports enabled, and
 then every navigation fails `ERR_TUNNEL_CONNECTION_FAILED`.** This is the
 REMOTE browser's exit failing, not your own network — the engines say so in
-the error rather than leaving you to guess. Observed on one account's zone
-on 2026-09-16, independent of the `country-` segment, and selective by host:
+the error rather than leaving you to guess. **Check the account's
+`proxyMode` first**; see "If the Browser API connects and then every
+navigation fails" above for what each mode means and the one command that
+shows it.
+
+What was observed here on 2026-09-16, kept because it is what the symptom
+looked like rather than because it explains it: the failures were
+independent of the `country-` segment and selective by host —
 `example.com` returned 200 from the same session in which
-`www.transfermarkt.com` and `api.ipify.org` both failed this way. A zone
-whose upstream refuses CONNECT for some hosts is an account/zone
-configuration matter to raise with 2Captcha support — there is nothing to
-fix in this repo, and a run with the flag removed will use a local browser.
+`www.transfermarkt.com` and `api.ipify.org` both failed. Whether that was an
+account with no exit attached, or an upstream refusing CONNECT per host, was
+never established: the endpoint in use then predates the accounts that were
+later inspected, so which one it addressed cannot be recovered. Check
+`proxyMode` before assuming either.
 
 **`--mode club-squad` returns very few rows.** Check the club id and
 `--season` are what you intended — an off-season or lower-tier squad

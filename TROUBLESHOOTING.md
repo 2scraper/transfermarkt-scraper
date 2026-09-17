@@ -102,6 +102,38 @@ the stripping pattern may need widening for a new extension version.
 A profile (`pid`) allows one live connection at a time. Another run is
 probably still holding it — wait for it to finish, or use a different `pid`.
 
+## `ERR_TUNNEL_CONNECTION_FAILED` over `--cdp-endpoint`
+
+The remote browser has no exit to tunnel through. Check the account's
+`proxyMode` with `tools/browser_profile_client.py accounts` — `"none"` means
+no proxy is attached, and the profile's `"inherit"` inherits that. This is
+not a network problem on your machine, and not the site.
+
+The CDP connection itself succeeding proves nothing here: authenticating to
+the Scraping Browser and having an exit to browse through are two separate
+things, which is why `Captcha.setAutoSolve enabled` can appear in the log
+immediately before every navigation fails.
+
+`use` refuses to write an endpoint for an account at `none` and says so.
+Pick an account whose mode is `our_proxy`, or attach a proxy to this one.
+
+## `401 deny_no_user` or `401 Wrong user name format`
+
+The login in the connection string is malformed or stale. Fetch a fresh
+`connectionUri` rather than editing the string:
+
+```bash
+python3 tools/browser_profile_client.py use --account-id N --write-env
+```
+
+Hand-assembling that login is what produces these. Measured 2026-09-17
+against the live endpoint, three encodings of the same custom proxy in the
+`-proxy-{base64url}` segment: padding stripped gave `401 deny_no_user`,
+padding kept as `=` and padding as `%3D` both gave
+`401 Wrong user name format`. Two distinct errors, and the last two agree,
+so the complaint is about the username as a whole rather than the base64
+inside it. The API builds a correct string itself; take that one.
+
 ## Selenium: `--cdp-endpoint` or `--proxy` does not work
 
 Both are expected limits, not bugs — see README's Engines section.

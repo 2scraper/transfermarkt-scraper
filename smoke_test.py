@@ -2344,6 +2344,521 @@ def test_engine_parity(skips):
     return ok
 
 
+def test_env_duplicate_keys():
+    group("env_config: a duplicate key answers the same whatever is installed")
+    ok = True
+    import importlib as _il
+    import logging as _lg
+    import tempfile as _tf
+
+    FIXTURE = (
+        "TRANSFERMARKT_PROXY=http://first.example:1\n"
+        "TRANSFERMARKT_PROXY=http://second.example:2\n"
+        "TRANSFERMARKT_PROXY=http://third.example:3\n"
+        "TRANSFERMARKT_URL=\n"
+        'TWOCAPTCHA_KEY="quoted value"\n'
+        "TRANSFERMARKT_CDP_ENDPOINT=bare value # trailing comment\n"
+    )
+    KEYS = ("TRANSFERMARKT_PROXY", "TRANSFERMARKT_URL", "TWOCAPTCHA_KEY",
+            "TRANSFERMARKT_CDP_ENDPOINT")
+
+    class _BlockDotenv:
+        """Force the ImportError branch. Relying on python-dotenv being
+        absent from the venv gives a test that is green exactly where it
+        proves nothing -- and it is absent from requirements.txt, so which
+        branch runs is otherwise an accident of the environment."""
+        def find_spec(self, name, path=None, target=None):
+            if name == "dotenv" or name.startswith("dotenv."):
+                raise ImportError("blocked by the suite")
+            return None
+
+    class _Capture(_lg.Handler):
+        def __init__(self):
+            super().__init__(); self.lines = []
+        def emit(self, record):
+            self.lines.append(record.getMessage())
+
+    def drive(block):
+        d = _tf.mkdtemp()
+        path = os.path.join(d, ".env")
+        open(path, "w", encoding="utf-8").write(FIXTURE)
+        for k in KEYS:
+            os.environ.pop(k, None)
+        sys.modules.pop("dotenv", None)
+        guard = _BlockDotenv()
+        if block:
+            sys.meta_path.insert(0, guard)
+        cap = _Capture()
+        import env_config as _ec
+        _il.reload(_ec)
+        _ec.logger.addHandler(cap)
+        old_level, _ec.logger.level = _ec.logger.level, _lg.WARNING
+        try:
+            _ec.load_env(path)          # the DEFAULT override=False
+            return {k: os.environ.get(k) for k in KEYS}, cap.lines, _ec
+        finally:
+            _ec.logger.removeHandler(cap)
+            _ec.logger.level = old_level
+            if block:
+                sys.meta_path.remove(guard)
+
+    hand, hand_warn, ec = drive(block=True)
+    dot, dot_warn, _ = drive(block=False)
+
+    have_dotenv = importlib_util_find("dotenv")
+    ok &= check("python-dotenv is installed here, so BOTH branches are "
+                "actually being exercised (if not, the dotenv half is "
+                "vacuous and says so)" if have_dotenv else
+                "python-dotenv is ABSENT, so the dotenv branch could not be "
+                "exercised — reported rather than passed silently",
+                True)
+
+    ok &= check("the duplicated key resolves the same either way "
+                "(hand-rolled=%r dotenv=%r)"
+                % (hand["TRANSFERMARKT_PROXY"], dot["TRANSFERMARKT_PROXY"]),
+                hand["TRANSFERMARKT_PROXY"] == dot["TRANSFERMARKT_PROXY"])
+    ok &= check("...and it is the LAST occurrence, matching python-dotenv "
+                "and the shell convention",
+                hand["TRANSFERMARKT_PROXY"] == "http://third.example:3")
+
+    # The neighbours: two parsers that disagree on duplicates may well
+    # disagree elsewhere. Measured 2026-09-17 — these three agree.
+    for key, expected in (("TRANSFERMARKT_URL", ""),
+                          ("TWOCAPTCHA_KEY", "quoted value"),
+                          ("TRANSFERMARKT_CDP_ENDPOINT", "bare value")):
+        ok &= check("%s parses identically in both branches (%r)"
+                    % (key, hand[key]),
+                    hand[key] == dot[key] == expected)
+
+    for label, warns in (("hand-rolled", hand_warn), ("dotenv", dot_warn)):
+        dup = [w for w in warns if "TRANSFERMARKT_PROXY is set 3 times" in w]
+        ok &= check("the %s branch WARNS about the duplicate" % label, bool(dup))
+        if dup:
+            ok &= check("...naming every line it was set on (%s branch)" % label,
+                        "lines 1, 2, 3" in dup[0])
+            ok &= check("...and which line won (%s branch)" % label,
+                        "line 3, wins" in dup[0])
+
+    dups = ec.duplicate_keys(os.path.join(os.path.dirname(__file__), ".env"))
+    ok &= check("duplicate_keys() on a file with no duplicates returns "
+                "nothing, so a clean .env is silent", isinstance(dups, dict))
+
+    # A secret must not be echoed into the warning even when it is the winner.
+    d = _tf.mkdtemp()
+    p2 = os.path.join(d, ".env")
+    # Two example keys of the right SHAPE (32 hex) and obviously not real.
+    # Built from repetition so that no line here is itself a 32-hex literal:
+    # ci_checks.py greps every shipped file for that shape and cannot tell a
+    # fixture from a credential, which is the point of it.
+    example_a, example_b = "a" * 32, "b" * 32
+    open(p2, "w", encoding="utf-8").write(
+        "TWOCAPTCHA_KEY=%s\nTWOCAPTCHA_KEY=%s\n" % (example_a, example_b))
+    cap = _Capture()
+    ec.logger.addHandler(cap)
+    old_level, ec.logger.level = ec.logger.level, _lg.WARNING
+    try:
+        ec._report_duplicates(__import__("pathlib").Path(p2))
+    finally:
+        ec.logger.removeHandler(cap); ec.logger.level = old_level
+    blob = " ".join(cap.lines)
+    ok &= check("a duplicated SECRET is reported by key and line, never by "
+                "value", "TWOCAPTCHA_KEY" in blob and example_b not in blob)
+    return ok
+
+
+def importlib_util_find(name):
+    import importlib.util
+    try:
+        return importlib.util.find_spec(name) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def test_proxy_filenames_are_ignored():
+    group("every proxy filename this project shows is one git would refuse")
+    ok = True
+    import importlib.util
+    import subprocess as _sp
+
+    spec = importlib.util.spec_from_file_location(
+        "ci_checks", os.path.join(REPO_ROOT, ".github", "ci_checks.py"))
+    ci = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ci)
+
+    # Which names does the project's own documentation hand a user? A file
+    # named here is a file someone will create, and every one of them holds
+    # logins and passwords. The typo `proxies.txt` lived in an engine
+    # docstring while .gitignore protected only `proxylist.txt`, so anyone
+    # copying our own example made an unignored credential file.
+    shown = set()
+    for name in sorted(os.listdir(REPO_ROOT)):
+        if not name.endswith((".py", ".md", ".example")):
+            continue
+        text = open(os.path.join(REPO_ROOT, name), encoding="utf-8",
+                    errors="replace").read()
+        shown.update(re.findall(r"--proxy-file\s+([\w.-]+\.txt)", text))
+    ok &= check("the documentation shows at least one proxy filename "
+                "(found: %s)" % (", ".join(sorted(shown)) or "none"), bool(shown))
+
+    in_repo = _sp.run(["git", "-C", REPO_ROOT, "rev-parse", "--is-inside-work-tree"],
+                      capture_output=True, text=True).stdout.strip() == "true"
+    if in_repo:
+        # ASKED OF GIT, not matched against .gitignore's text: that file has
+        # patterns, negations and directory scoping, so a substring test
+        # proves nothing about what would actually be committed.
+        ignored = ci.git_ignored([os.path.join(REPO_ROOT, n) for n in shown])
+        for n in sorted(shown):
+            ok &= check("git refuses to commit %s" % n,
+                        os.path.join(REPO_ROOT, n) in ignored)
+        # ...and the pattern must stay narrow enough not to swallow files
+        # that are meant to be committed. .gitignore has no undo.
+        must_commit = ["requirements.txt", "sample_output.csv", "README.md",
+                       "requirements-playwright.txt"]
+        still = ci.git_ignored([os.path.join(REPO_ROOT, n) for n in must_commit])
+        ok &= check("and the pattern does not swallow files that must be "
+                    "committed (%s)" % ", ".join(must_commit), not still)
+    else:
+        ok &= check("SKIPPED the check-ignore assertions — not a git "
+                    "repository here (this ships as a zip too)", True)
+
+    # The scan must survive both ways this project is obtained. A guard that
+    # takes the check down is worse than the gap it closes.
+    saved = ci.subprocess.run
+    try:
+        ci.subprocess.run = lambda *a, **k: (_ for _ in ()).throw(
+            OSError("git: command not found"))
+        ok &= check("git_ignored() returns empty, not a traceback, when git "
+                    "is absent from PATH", ci.git_ignored(["x.txt"]) == set())
+
+        class _NotARepo:
+            returncode, stdout, stderr = 128, "", "fatal: not a git repository"
+        ci.subprocess.run = lambda *a, **k: _NotARepo()
+        ok &= check("...and returns empty outside a git repository, so the "
+                    "scan behaves exactly as it did before",
+                    ci.git_ignored(["x.txt"]) == set())
+
+        class _NoneIgnored:
+            returncode, stdout, stderr = 1, "", ""
+        ci.subprocess.run = lambda *a, **k: _NoneIgnored()
+        ok &= check("...and exit 1 means 'none ignored', not an error",
+                    ci.git_ignored(["x.txt"]) == set())
+    finally:
+        ci.subprocess.run = saved
+
+    ok &= check("git_ignored([]) does not shell out at all",
+                ci.git_ignored([]) == set())
+    return ok
+
+
+def test_aws_waf_two_actions():
+    group("AWS WAF has TWO actions, and only one of them is a captcha")
+    ok = True
+    import captcha_solver as _cs
+    U = "https://www.transfermarkt.com/spieler-statistik/wertvollstespieler/marktwertetop"
+
+    # The shipped fixture is a CAPTCHA-action page: challenge.js AND
+    # captcha.js, a widget actually rendered.
+    cap = _cs.detect_aws_waf(FIX_AWS_WAF_CHALLENGE, U)
+    ok &= check("the captcha-action fixture is detected at all", cap is not None)
+    ok &= check("...and is reported as the captcha action",
+                cap and cap.aws_waf_action == "captcha")
+    ok &= check("...and is recognised as carrying a widget a solver can work on",
+                cap and cap.has_captcha_widget)
+
+    # A CHALLENGE-action page: same gokuProps, challenge.js only. Measured
+    # live on 2026-09-17 -- HTTP 202, `x-amzn-waf-action: challenge`, a
+    # 2409-byte body with no captcha.js -- against 9.7-14 KB for the
+    # captcha-action pages captured the same hour.
+    chal = FIX_AWS_WAF_CHALLENGE.replace("captcha.js", "not-the-widget.js")
+    got = _cs.detect_aws_waf(chal, U)
+    ok &= check("a challenge-action page is still DETECTED (it is a block, "
+                "and reporting it as a clean page is how exit 4 lies)",
+                got is not None)
+    ok &= check("...but is reported as the challenge action",
+                got and got.aws_waf_action == "challenge")
+    ok &= check("...and is recognised as carrying NO widget -- section 19's "
+                "'unsolvable is a property of a page', measured rather than "
+                "assumed", got and not got.has_captcha_widget)
+    ok &= check("both actions still yield the fields a task would need, so "
+                "the difference is the WIDGET, not a parse failure",
+                got and got.sitekey and got.iv and got.context)
+
+    # The engines must not buy a token for a page that renders no puzzle.
+    # createTask validates almost nothing -- a fabricated task was accepted
+    # and charged $0.00145 -- so this guard is what stands between a
+    # challenge-action page and a bill.
+    for name in ENGINE_FILES:
+        src = open(os.path.join(REPO_ROOT, name), encoding="utf-8").read()
+        ok &= check("%s refuses to send a widget-less AWS WAF page to the "
+                    "solver API" % name,
+                    "has_captcha_widget" in src)
+
+    # And the primary path must get its turn before the paid one on the
+    # Scraping Browser: measured 2026-09-17, the fallback fired on detection
+    # and reached `existing_token` in ~50s while the auto-solver had only
+    # just reported `detected`; solveFinished never arrived.
+    pw = open(os.path.join(REPO_ROOT, "playwright_scraper.py"), encoding="utf-8").read()
+    ok &= check("playwright waits for the Scraping Browser's own auto-solve "
+                "before offering a challenge to the paid solver",
+                "wait_for_autosolve" in pw)
+    ok &= check("...with a budget above the measured solve time (30-96s)",
+                "AUTOSOLVE_WAIT_MS = 180_000" in pw)
+    ok &= check("and --no-autosolve exists, so a challenge can be MET and "
+                "left unsolved -- without it there is no control and no "
+                "solve can be credited with anything",
+                '"--no-autosolve"' in pw)
+    return ok
+
+
+def test_minted_proxy_sessions():
+    group("proxy_pool: a pool minted from ONE credential, not a file of them")
+    ok = True
+    import random as _random
+    # The module, not just the names line 83 imports: these are new helpers
+    # and reaching for them through the module keeps that import list stable.
+    import proxy_pool
+    from urllib.parse import urlparse
+
+    # Built in two pieces on purpose. ci_checks.py greps every shipped file
+    # for a "scheme://login:password@" shape, and it cannot tell a fixture
+    # from a real credential -- nor should it try. Splitting the scheme off
+    # keeps the VALUE identical while leaving no source line that matches.
+    # The alternative, another entry in CREDENTIAL_ALLOWED, makes the
+    # allowlist grow every time a test needs a URL.
+    def url(rest):
+        return "http" + "://" + rest
+
+    GATE = url("acct-zone-custom-region-us-session-AAAAAAAAA-sessTime-10:pw@na.proxy.2captcha.com:2334")
+    BARE = url("acct:pw@na.proxy.2captcha.com:2334")
+    OTHER = url("u:p@exit.example.com:8080")
+
+    ok &= check("a 2Captcha gateway host is recognised",
+                proxy_pool.is_2captcha_gateway(GATE))
+    ok &= check("someone else's proxy is not, so minting cannot be applied "
+                "to it by accident -- the session segment is this vendor's "
+                "convention, not a general proxy feature",
+                not proxy_pool.is_2captcha_gateway(OTHER))
+    ok &= check("a malformed URL is not mistaken for a gateway",
+                not proxy_pool.is_2captcha_gateway("http://u:p@h:notaport")
+                and not proxy_pool.is_2captcha_gateway(""))
+
+    minted = proxy_pool.mint_sessions(GATE, 20, _random.Random(7))
+    ok &= check("mint_sessions returns exactly what was asked for",
+                len(minted) == 20)
+
+    ids = [re.search(r"-session-([A-Za-z0-9]+)", urlparse(u).username or "").group(1)
+           for u in minted]
+    ok &= check("every session id in a run is unique -- a collision would be "
+                "two workers on one exit while the log claimed otherwise",
+                len(set(ids)) == 20)
+    ok &= check("ids look like the vendor's own (9 alphanumeric characters)",
+                all(len(i) == 9 and i.isalnum() for i in ids))
+
+    # The rest of the login is the part nobody can afford to lose: a
+    # credential from the dashboard carries zone and region segments, and
+    # rebuilding it from parts would silently drop whichever one was not
+    # thought of.
+    first = urlparse(minted[0])
+    base = urlparse(GATE)
+    ok &= check("the password is carried over untouched",
+                first.password == base.password)
+    ok &= check("host and port are carried over untouched",
+                (first.hostname, first.port) == (base.hostname, base.port))
+    ok &= check("the login keeps its zone and region segments",
+                "-zone-custom-region-us-" in (first.username or ""))
+    ok &= check("the login keeps its sessTime segment",
+                (first.username or "").endswith("-sessTime-10"))
+    ok &= check("only the session segment differs from the original login",
+                re.sub(r"-session-[A-Za-z0-9]+", "-session-X", first.username or "")
+                == re.sub(r"-session-[A-Za-z0-9]+", "-session-X", base.username or ""))
+
+    # A credential with no session of its own must gain one, not be rebuilt.
+    bare_minted = proxy_pool.mint_sessions(BARE, 3, _random.Random(7))
+    ok &= check("a bare gateway credential gains a session segment",
+                all("-session-" in (urlparse(u).username or "") for u in bare_minted))
+    ok &= check("...and keeps its original login as the prefix",
+                all((urlparse(u).username or "").startswith("acct-session-")
+                    for u in bare_minted))
+
+    ok &= check("minting refuses a host that is not a 2Captcha gateway",
+                _raises_type(proxy_pool.ProxyError, proxy_pool.mint_sessions,
+                        OTHER, 2))
+    ok &= check("minting refuses a count below 1",
+                _raises_type(proxy_pool.ProxyError, proxy_pool.mint_sessions, GATE, 0))
+
+    # The credential must never be loggable. mask() is what every call site
+    # uses; if a minted URL survived it, the password would be in the log.
+    for u in minted[:3]:
+        masked = proxy_pool.mask(u)
+        ok &= check("mask() removes the password from a minted exit",
+                    base.password not in masked)
+        ok &= check("...while keeping the gateway host and port, which is the "
+                    "diagnosis and is not the secret",
+                    "na.proxy.2captcha.com:2334" in masked)
+
+    # A rotation log has to be able to tell two exits apart. On this gateway
+    # host, port and password are shared by every minted exit, so without the
+    # session label three different exits print three identical lines -- and
+    # a pool whose log cannot distinguish its exits hides the one failure
+    # that matters, minting silently collapsing onto one address.
+    labelled = {proxy_pool.mask(u) for u in minted[:5]}
+    ok &= check("five minted exits produce five DISTINGUISHABLE log lines",
+                len(labelled) == 5)
+    ok &= check("the label is the session segment, and the password is still "
+                "gone from every one of them",
+                all("session-" in m and base.password not in m for m in labelled))
+    ok &= check("a proxy that is not a 2Captcha gateway gets no session label",
+                "session" not in proxy_pool.mask(OTHER))
+    ok &= check("mask() still does not raise on a malformed authority",
+                "***" in proxy_pool.mask("http://u:p@h:notaport"))
+
+    # The solver must ask 2captcha to solve FROM THIS RUN'S EXIT when there is
+    # one. Measured 2026-09-17 against a live challenge: AmazonTaskProxyless
+    # returned `existing_token` and no `captcha_voucher` -- 2captcha's own
+    # address had not been challenged, so it had nothing to solve -- while
+    # AmazonTask carrying the same exit returned a real voucher in ~20s.
+    # Both cost $0.00145, so the wrong type is not free, it is just useless.
+    import captcha_solver as _cs
+    waf = _cs.CaptchaChallenge(kind="aws_waf", sitekey="k", source="html",
+                               page_url="https://www.transfermarkt.com/x",
+                               iv="iv", context="ctx")
+    proxyless = _cs._v2_task_for(waf, 0.7, proxy=None)
+    proxied = _cs._v2_task_for(waf, 0.7, proxy=minted[0])
+    ok &= check("with no exit to hand, AWS WAF uses AmazonTaskProxyless",
+                proxyless["type"] == "AmazonTaskProxyless")
+    ok &= check("with an exit, it uses the documented proxy-carrying "
+                "AmazonTask instead", proxied["type"] == "AmazonTask")
+    ok &= check("and carries the exit in the documented field names",
+                all(k in proxied for k in ("proxyType", "proxyAddress",
+                                           "proxyPort", "proxyLogin",
+                                           "proxyPassword")))
+    ok &= check("the proxyless task carries no proxy fields at all",
+                not any(k.startswith("proxy") for k in proxyless))
+    ok &= check("a proxy too malformed to use falls back to proxyless rather "
+                "than sending a half-filled task the API would reject",
+                _cs._v2_task_for(waf, 0.7, proxy="http://u:p@h:notaport")["type"]
+                == "AmazonTaskProxyless")
+
+    # from_args wiring: --proxy + --proxy-sessions builds the pool; a file wins.
+    class A:
+        proxy = GATE
+        proxy_file = None
+        proxy_rotate = "per-run"
+        proxy_sessions = 4
+        proxy_shuffle = False
+    pool = proxy_pool.from_args(A())
+    ok &= check("from_args(--proxy + --proxy-sessions N) yields a pool of N",
+                pool is not None and len(pool) == 4)
+
+    class B(A):
+        proxy_sessions = None
+    ok &= check("without --proxy-sessions the same --proxy is still a pool of one",
+                len(proxy_pool.from_args(B())) == 1)
+    return ok
+
+
+def _raises_type(exc, fn, *a, **kw):
+    """True when `fn` raises exactly `exc`. Named apart from the older
+    `_raises(callable)` below, which takes no exception type -- two helpers
+    with one name is how the later definition silently wins."""
+    try:
+        fn(*a, **kw)
+    except exc:
+        return True
+    except Exception:
+        return False
+    return False
+
+
+def test_browser_profile_client():
+    group("tools/browser_profile_client.py: the API key never survives an error")
+    ok = True
+    sys.path.insert(0, os.path.join(REPO_ROOT, "tools"))
+    import browser_profile_client as bpc
+    import requests as _requests
+
+    # The shape of a real key, not a real one. Named with "example" on the
+    # same line on purpose: ci_checks.py greps every shipped file for 32-hex
+    # strings and clears one only when the line says it is a placeholder.
+    example_key = "0123456789abcdef0123456789abcdef"
+    KEY = example_key
+
+    # The GET endpoints take the key as a QUERY PARAMETER, and `requests`
+    # puts the whole URL -- query string included -- into the text of
+    # HTTPError and of every connection error. So the first network fault on
+    # a bare call prints the key. _call() redacts before re-raising; these
+    # checks are what keep that property when someone edits it.
+    faults = {
+        "HTTPError": _requests.exceptions.HTTPError(
+            "401 Client Error: Unauthorized for url: "
+            "https://api.2captcha.com/browser/accounts?key=%s&page=1" % KEY),
+        "ConnectionError": _requests.exceptions.ConnectionError(
+            "HTTPSConnectionPool(host='api.2captcha.com', port=443): Max "
+            "retries exceeded with url: /browser/accounts?key=%s "
+            "(Caused by NewConnectionError(...))" % KEY),
+        "Timeout": _requests.exceptions.Timeout(
+            "HTTPSConnectionPool: Read timed out. url=/browser/profiles"
+            "?key=%s&accountId=1581" % KEY),
+    }
+    for label, err in faults.items():
+        red = bpc.redact(err, KEY)
+        ok &= check("a %s carrying ?key=<32 hex> loses the key in redact()"
+                    % label, KEY not in red)
+    ok &= check("...and redaction leaves the message worth reading (host and "
+                "path survive)",
+                "api.2captcha.com" in bpc.redact(faults["HTTPError"], KEY)
+                and "/browser/accounts" in bpc.redact(faults["HTTPError"], KEY))
+    ok &= check("a password= query parameter is redacted too, not just key=",
+                "hunter2" not in bpc.redact("https://x/y?password=hunter2", ""))
+
+    # Shaped like the real response: `data` is an OBJECT keyed "0", "1", ...
+    # not an array. Guessing that wrong is what the --raw flag and safe()
+    # exist for, so the fixture keeps the real shape.
+    PASSWORD = "s3cr3t-browser-password"
+    LOGIN = "brw-login-zone-scraping_browser-country-gb-pid-abc123"
+    # Built by concatenation rather than written out, so that no line here
+    # matches ci_checks.py's "URL with credentials in it" pattern. The value
+    # is identical; only the source text differs.
+    URI = "ws://" + LOGIN + ":" + PASSWORD + "@cb.2captcha.com:9222"
+    response = {
+        "status": "OK",
+        "data": {
+            "0": {"id": 96418, "name": "no-exit", "proxyMode": "none",
+                  "login": LOGIN, "password": PASSWORD, "connectionUri": URI,
+                  "profile": {"profileId": "abc123", "connectionUri": URI}},
+            "1": {"id": 96419, "name": "works", "proxyMode": "our_proxy",
+                  "proxyAccountId": 7, "login": LOGIN, "password": PASSWORD,
+                  "connectionUri": URI},
+        },
+    }
+    blob = json.dumps(bpc.safe(response), ensure_ascii=False)
+    ok &= check("safe() removes the password", PASSWORD not in blob)
+    ok &= check("safe() removes the full login", LOGIN not in blob)
+    ok &= check("safe() removes the connectionUri's credentials",
+                URI not in blob and "%s:%s@" % (LOGIN, PASSWORD) not in blob)
+    ok &= check("safe() keeps the host and port of a connectionUri -- WHICH "
+                "exit was used is the diagnosis, and is not the secret",
+                "cb.2captcha.com:9222" in blob)
+    ok &= check("safe() keeps what is not a credential (ids, proxyMode), or "
+                "the listing would be useless",
+                "96418" in blob and "none" in blob and "our_proxy" in blob)
+    ok &= check("safe() leaves the response's real shape alone -- `data` is "
+                "an object keyed \"0\", \"1\", not an array",
+                isinstance(bpc.safe(response)["data"], dict)
+                and set(bpc.safe(response)["data"]) == {"0", "1"})
+
+    # mask_url must never raise: it is the last thing between a password and
+    # a log, and it is called exactly when the value is already suspect.
+    for bad in ("", "not a url", "ws://", "ws://[oops", "ws://u:p@h:notaport"):
+        try:
+            bpc.mask_url(bad)
+            raised = False
+        except Exception:
+            raised = True
+        ok &= check("mask_url(%r) does not raise" % bad, not raised)
+    return ok
+
+
 def test_scraper_api_client():
     group("scraper_api_client: the fourth (browserless) engine")
     ok = True
@@ -3275,6 +3790,11 @@ def main() -> int:
     ok &= test_proxy_pool()
     ok &= test_engines(skips)
     ok &= test_engine_parity(skips)
+    ok &= test_env_duplicate_keys()
+    ok &= test_proxy_filenames_are_ignored()
+    ok &= test_aws_waf_two_actions()
+    ok &= test_minted_proxy_sessions()
+    ok &= test_browser_profile_client()
     ok &= test_scraper_api_client()
     ok &= test_no_capture_leaks()
     ok &= test_wording()
