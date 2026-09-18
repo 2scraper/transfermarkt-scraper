@@ -2,6 +2,33 @@
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.1] — 2026-09-16
+
+### Added
+
+- **Two static checks this suite did not have**, both ported from the audit
+  that ran across the family on 2026-09-16 and 2026-09-17:
+  - **calls into a shared module are bound against the callee's real
+    signature** (§17's check #1). It catches a call whose arguments do not
+    fit, and a call to a name the shared module does not define at all —
+    both of which reach a live run as a crash on the first fetch while
+    import, `--help`, `compileall` and the undefined-name walk stay green.
+    It skips `*args`/`**kwargs` calls rather than guessing, treats a
+    locally-bound name as shadowing a same-named module (an engine takes
+    `proxy_pool` as a parameter), and asserts it found calls to bind so it
+    cannot pass by scanning nothing.
+  - **no statement the control flow can never reach** — a statement after a
+    `return`/`raise`/`break`/`continue` in the same block. The
+    undefined-name walk cannot see this class by design, since it pools
+    every binding in a file rather than tracking scopes. Six repos in this
+    family carried the same fifteen unreachable lines from their first
+    commit; this repo's current tree is clean, and the check is what keeps
+    it that way.
+
+  Both verified by control: a `return 1` followed by a statement, and a
+  `finish_run()` call with fourteen positional arguments, each turn the
+  suite red.
+
 ## [1.1.0] — 2026-09-17
 
 The release in which the **primary** path was finally exercised: a live AWS
