@@ -159,6 +159,34 @@ def _mask_credentials(text: str) -> str:
     return _CREDENTIALS_IN_URL_RE.sub(r"\1***:***@", text or "")
 
 
+# The other half of a safe x-debug line: a key passed as a query parameter.
+# _mask_credentials above already handles an embedded username:password
+# anywhere in the text and on every occurrence, which is why this is an
+# addition rather than a replacement.
+#
+# Same shape as captcha_solver's and fingerprint_client's. A third copy is
+# one too many and they should be unified in a family pass; reaching into
+# another module's private name to avoid it would be worse.
+_KEY_IN_TEXT_RE = re.compile(
+    r"((?:client)?key|token|api[_-]?key)=([^&\s'\"]{6,})", re.IGNORECASE)
+
+
+def _redact_debug_header(value: str) -> str:
+    """The x-debug header, safe to log.
+
+    SECURITY.md names this header as one of three places credentials reach a
+    log unmasked, and it was logged verbatim: the API echoes back the task it
+    ran, so a run driven through a credentialed CDP endpoint put that
+    endpoint's username and password into the log.
+
+    Redaction rather than an allowlist of fields, deliberately: the header is
+    the API's own metadata and its shape is not ours to pin, so an allowlist
+    would silently drop the cost and timing figures this is logged FOR the
+    first time the API adds a field.
+    """
+    return _KEY_IN_TEXT_RE.sub(r"\1=***", _mask_credentials(value))
+
+
 def _build_wait_for(args) -> Optional[str]:
     """`waitFor` must be a JSON STRING (double-encoded), per the API docs.
     Passing a nested object is silently wrong.
@@ -211,7 +239,7 @@ def fetch_html(args, url: str, timeout: int):
     # cost of the call shows up.
     debug = resp.headers.get("x-debug")
     if debug:
-        logger.info("x-debug: %s", debug)
+        logger.info("x-debug: %s", _redact_debug_header(debug))
 
     if resp.status_code != 200:
         # 422 = task ran but errored (this is what a bad/unreachable

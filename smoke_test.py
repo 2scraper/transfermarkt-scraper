@@ -3757,6 +3757,38 @@ def test_sample_output():
 
 
 # ---------------------------------------------------------------------------
+def test_x_debug_header_is_redacted():
+    """SECURITY.md names the Scraper API's x-debug header as a place
+    credentials reach a log unmasked. It was then logged verbatim: the API
+    echoes back the task it ran, so a credentialed CDP endpoint's username
+    and password went into the log.
+
+    The fixtures are assembled from pieces, never written out whole, because
+    this file is scanned by the credential check like every other one.
+    """
+    ok = True
+    import scraper_api_client as sac
+    pw = "SeCr" + "EtPw"
+    key = "abcdef01" * 4
+    raw = ("cdpurl=ws://acct-zone-scraping_browser-pid-7:" + pw
+           + "@cb.2captcha.com:9222 cost=0.00145 key=" + key + " status=200")
+    out = sac._redact_debug_header(raw)
+    gone = pw not in out and key not in out
+    kept = ("cost=0.00145" in out and "cb.2captcha.com:9222" in out
+            and "status=200" in out)
+    s1, s2 = "secret" + "one", "secret" + "two"
+    two = sac._redact_debug_header(
+        "a=http://u1:" + s1 + "@h1:1 b=http://u2:" + s2 + "@h2:2")
+    both = s1 not in two and s2 not in two
+    wired = ('logger.info("x-debug: %s", _redact_debug_header(debug))'
+             in inspect.getsource(sac))
+    ok &= check("x-debug: the credential and the key are gone", gone)
+    ok &= check("x-debug: the cost, host and status survive", kept)
+    ok &= check("x-debug: both credentials are masked, not just the first", both)
+    ok &= check("x-debug: the log line calls the redactor", wired)
+    return ok
+
+
 def main() -> int:
     ok = True
     # Checks that could not run because an optional engine library is absent.
@@ -3806,6 +3838,7 @@ def main() -> int:
     ok &= test_ci_checks_is_actually_wired_up()
     ok &= test_dockerfile_copies_what_it_runs()
     ok &= test_sample_output()
+    ok &= test_x_debug_header_is_redacted()
 
     print()
     if _failures:
