@@ -1835,8 +1835,15 @@ def test_finish_run():
                     rc == EXIT_BLOCKED)
 
         # 0 rows, not blocked (a genuinely empty page) -> EXIT_NO_PRODUCTS.
+        #
+        # The stop_reason has to be one the engines actually emit. This used
+        # to pass "empty", which appears nowhere but this line -- no engine
+        # produces it -- so the case being asserted did not exist. Exit 4 is
+        # a claim about the CATALOGUE, and finish_run will only make that
+        # claim for a run that COMPLETED; an unrecognised reason now
+        # correctly reports 5 instead, which is what caught this.
         rc = finish_run([], prefix, "json", allow_empty=False, blocked=False,
-                        stop_reason="empty", pages_requested=1, pages_completed=1,
+                        stop_reason="completed", pages_requested=1, pages_completed=1,
                         start_url="https://x/1", final_url="https://x/1", mode="club-squad")
         ok &= check("0 rows, NOT blocked, returns EXIT_NO_PRODUCTS",
                     rc == EXIT_NO_PRODUCTS)
