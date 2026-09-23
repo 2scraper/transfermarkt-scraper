@@ -17,6 +17,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so the page classifier never saw a target 403/503 — a live rakuten run
   logged "Upstream page status success". `status` is now a fallback only
   when it is an integer.
+- **The bug-report template still said this site challenges nobody.** Its
+  exit-3 hint claimed the repo's research found no captcha anywhere on the
+  site, so a missing proxy or key would not be the cause — the claim the
+  README retracted in v0.4.1, after 8 of 10 datacentre requests met an AWS
+  WAF captcha. It now points at `tools/waf_probe.sh` and the README's
+  "What the 2Captcha products are for here".
+- `SECURITY.md` said this project has no releases or tags; it has both.
+
+### Added
+
+- The family's access badge, worded to what the README measures: no account
+  is needed if AWS WAF lets your address through, which is a property of the
+  address on the day.
 
 ## [1.1.0] — 2026-09-17
 
