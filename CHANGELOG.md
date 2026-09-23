@@ -2,6 +2,22 @@
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Scraper API: `waitFor` is now sent as a JSON object.** It went out as a
+  JSON-encoded string, following a docstring that said the API required one.
+  Measured 2026-09-23 against `/tasks/sync`: the string form is refused with
+  HTTP 422 ("params.waitFor must be an object") and still billed ($0.0005);
+  the object form answers HTTP 200. Every `--wait-*` run was therefore
+  a paid exit 5.
+- **Scraper API: the target's HTTP status is read from `http_code`.** The
+  client read `status`, which is the API's own verdict string (`"success"`),
+  so the page classifier never saw a target 403/503 — a live rakuten run
+  logged "Upstream page status success". `status` is now a fallback only
+  when it is an integer.
+
 ## [1.1.0] — 2026-09-17
 
 The release in which the **primary** path was finally exercised: a live AWS
