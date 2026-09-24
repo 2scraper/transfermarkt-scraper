@@ -272,6 +272,38 @@ def classify(html: Optional[str], *, status: Optional[int] = None,
 # if-chain, for the reason CLAUDE.md gives: an engine cannot then quietly
 # disagree with its twins about whether a page is worth retrying or paying
 # for.
+# AWS WAF's CHALLENGE action (challenge.js, no widget) is a script a real
+# browser runs by itself: it computes a token, sets `aws-waf-token` and
+# reloads the page. Measured 2026-09-24 from a datacentre VPS on the
+# market-values page: 3 of 3 fresh headless Chromium sessions cleared it in
+# 1.0 s and were served the real page. Every engine used to report it as
+# blocked 0.4 s after the fetch instead, which made every run from a
+# datacentre address or a GitHub runner exit 3. 15 s is fifteen times the
+# measured figure; a challenge still standing after that is reported as
+# before.
+AWS_CHALLENGE_SETTLE_MS = 15000
+AWS_CHALLENGE_POLL_MS = 500
+
+
+def wait_for_waf_challenge(content: Callable[[], Optional[str]],
+                           sleep: Callable[[int], None],
+                           still_challenged: Callable[[str], bool]) -> bool:
+    """Poll until the WAF's own script has replaced its page. True if it did.
+
+    `content` and `sleep` are the engine's driver operations and
+    `still_challenged(html)` is the detector, so no driver dialect crosses
+    this boundary.
+    """
+    waited = 0
+    while waited < AWS_CHALLENGE_SETTLE_MS:
+        sleep(AWS_CHALLENGE_POLL_MS)
+        waited += AWS_CHALLENGE_POLL_MS
+        html = content()
+        if html and not still_challenged(html):
+            return True
+    return False
+
+
 STATE_POLICY = {
     "content": {"retry": False, "solve": False, "blocked": False},
     "blocked": {"retry": True, "solve": False, "blocked": True},
