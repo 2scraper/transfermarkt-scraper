@@ -443,14 +443,23 @@ def handle_captcha_if_present(page, args, ready_selector: str,
     # that runs the script passes this by itself, which is why the wait
     # above is still the right thing to do for it.
     if challenge.is_aws_waf and not challenge.has_captcha_widget:
+        # No widget, so nothing to buy (§19: "unsolvable" is a property of a
+        # page). But this action is a script a real browser runs by itself,
+        # so give it the time it measurably takes before judging the page.
         logger.info("AWS WAF %s action and no captcha widget on the page — "
-                    "not sending this to the solver API; there is no puzzle "
-                    "here to buy an answer to. NOTE: this engine does not "
-                    "wait for the challenge script to finish either, so a "
-                    "run can report blocked on a page a browser might have "
-                    "cleared by itself — measured on a GitHub runner "
-                    "2026-09-17, blocked 0.4s after the fetch.",
-                    challenge.aws_waf_action)
+                    "not sending this to the solver API. Waiting up to %.0fs "
+                    "for the challenge script to clear it by itself.",
+                    challenge.aws_waf_action,
+                    page_flow.AWS_CHALLENGE_SETTLE_MS / 1000)
+        d = _driver(page)
+        if page_flow.wait_for_waf_challenge(
+                d["content"], d["sleep"],
+                lambda h: detect_aws_waf(h, d["current_url"]()) is not None):
+            logger.info("The AWS WAF challenge cleared by itself; nothing was "
+                        "paid.")
+            return True
+        logger.info("The AWS WAF challenge was still up after %.0fs.",
+                    page_flow.AWS_CHALLENGE_SETTLE_MS / 1000)
         return False
 
     logger.warning("%s detected via %s (sitekey=%s) — attempting to solve.",
@@ -586,6 +595,13 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         if handle_captcha_if_present(session.page, args, ready_selector,
                                     proxy=pool.current if pool else None):
             session.page.wait_for_timeout(1000)
+            # The page now holds a DIFFERENT document: the WAF's script
+            # reloaded it, or a solve did. The status and headers `goto`
+            # returned (202 / 405, `x-amzn-waf-action`) describe the
+            # interstitial that is gone, and classifying the new page by them
+            # called a served page blocked. Judge the new document by what it
+            # holds, as the twins (which have no status) already do.
+            resp_status, resp_headers = None, None
 
         html = _content_when_settled(session.page) or ""
         state = _classify(session.page, html, status=resp_status,
