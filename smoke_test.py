@@ -3847,6 +3847,44 @@ def test_scraper_api_waitfor_is_an_object():
     return ok
 
 
+
+def test_aws_waf_challenge_is_waited_out():
+    """AWS WAF's CHALLENGE action clears by itself in a real browser (3 of 3
+    in 1.0 s, 2026-09-24), and every engine used to report it as blocked
+    0.4 s after the fetch. page_flow.wait_for_waf_challenge polls for the
+    WAF's own page to be replaced; the Playwright engine then must not
+    classify the NEW document by the old response's 202 and header."""
+    ok = True
+    import page_flow
+    import captcha_solver as cs
+    here = os.path.dirname(os.path.abspath(__file__))
+    pages = iter([FIX_AWS_WAF_CHALLENGE, FIX_AWS_WAF_CHALLENGE,
+                  "<html><body>the real page</body></html>"])
+    slept = []
+    cleared = page_flow.wait_for_waf_challenge(
+        lambda: next(pages), slept.append,
+        lambda h: cs.detect_aws_waf(h, "https://www.transfermarkt.com/") is not None)
+    ok &= check("a challenge replaced by the real page counts as cleared", cleared)
+    ok &= check("...after polling, not on the first look", len(slept) == 3)
+    stuck = page_flow.wait_for_waf_challenge(
+        lambda: FIX_AWS_WAF_CHALLENGE, lambda ms: None,
+        lambda h: cs.detect_aws_waf(h, "https://www.transfermarkt.com/") is not None)
+    ok &= check("a challenge that never clears is reported as not cleared", not stuck)
+    for name in ("playwright_scraper.py", "puppeteer_scraper.py", "selenium_scraper.py"):
+        src = open(os.path.join(here, name), encoding="utf-8").read()
+        ok &= check("%s waits for the challenge rather than giving up at once" % name,
+                    "page_flow.wait_for_waf_challenge(" in src)
+    pw = open(os.path.join(here, "playwright_scraper.py"), encoding="utf-8").read()
+    # Structural, and scoped to the branch that runs after a clear or a
+    # solve: the same assignment also initialises the loop, so a bare
+    # substring check passed with the fix removed (planted, 2026-09-24).
+    import re as _re
+    ok &= check("playwright_scraper drops the stale status once the document changed",
+                bool(_re.search(r"if handle_captcha_if_present\(session\.page[^\n]*\n"
+                                r"(?:[^\n]*\n){1,12}?\s+resp_status, resp_headers = None, None",
+                                pw)))
+    return ok
+
 def main() -> int:
     ok = True
     # Checks that could not run because an optional engine library is absent.
@@ -3898,6 +3936,7 @@ def main() -> int:
     ok &= test_sample_output()
     ok &= test_x_debug_header_is_redacted()
     ok &= test_scraper_api_waitfor_is_an_object()
+    ok &= test_aws_waf_challenge_is_waited_out()
 
     print()
     if _failures:
