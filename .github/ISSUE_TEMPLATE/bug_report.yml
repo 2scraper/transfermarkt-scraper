@@ -12,13 +12,15 @@ body:
 
         A few things answer most reports faster than we can:
 
-        - **Exit 3 (blocked)?** This repo's own research found no captcha,
-          proxy or browser challenge anywhere on this site from a plain
-          datacentre fetch (see `scraper_api_client.py`'s docstring and
-          `.env.example`) — so exit 3 here usually means something upstream
-          really changed, not that a proxy or `--twocaptcha-key` is missing.
-          Check `product_parser.detect_bot_challenge()` / `BOT_CHALLENGE_MARKERS`
-          against what the page actually returned.
+        - **Exit 3 (blocked)?** Transfermarkt sits behind AWS WAF on
+          CloudFront, and whether it challenges you is a property of your
+          address on the day: measured from one datacentre address, 8 of 10
+          consecutive requests got a captcha, while other network positions
+          the same day drew none. Run `bash tools/waf_probe.sh 10
+          market-values` from your own address first, and see the README's
+          "What the 2Captcha products are for here" — the Scraping Browser
+          API is the default path, and the captcha solver clears the WAF
+          captcha when one reaches the page.
         - **Zero rows on `--mode market-values --pages N > 1`?** Check
           whether this is the rare "gallery pagination trap" case in the
           README first — a fallback chain exists for it, and running out of

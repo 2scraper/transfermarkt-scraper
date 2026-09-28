@@ -6,6 +6,7 @@
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 [![licence](https://img.shields.io/badge/licence-MIT-lightgrey)](LICENSE)
 [![engines](https://img.shields.io/badge/engines-Playwright%20%7C%20Selenium%20%7C%20pyppeteer%20%7C%20CDP%20%7C%20Scraper%20API-informational)](#engines)
+[![runs without an account if AWS WAF passes your IP](https://img.shields.io/badge/runs%20without%20an%20account-if%20AWS%20WAF%20passes%20your%20IP-yellow)](#what-the-2captcha-products-are-for-here)
 
 Scrapes **transfermarkt.com**: player market-value rankings, a club's full
 squad, the latest-transfers ledger, and individual player profiles. JSON or
