@@ -678,7 +678,7 @@ def parse_args():
     p.add_argument("--delay", type=float, default=2.0)
     p.add_argument("--concurrency", type=int, default=1,
                    help="Ignored in this engine — see playwright_scraper.py.")
-    p.add_argument("--retries", type=int, default=3)
+    p.add_argument("--retries", type=page_flow.attempts, default=3)
     p.add_argument("--retry-delay", type=float, default=2.0)
     p.add_argument("--format", choices=["json", "csv", "both"], default="both")
     p.add_argument("--out", default="transfermarkt_products")

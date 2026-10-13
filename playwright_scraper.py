@@ -993,7 +993,7 @@ def parse_args():
                         "effect for --mode transfers (see page_flow.py for "
                         "why market-values cannot support it); ignored "
                         "elsewhere.")
-    p.add_argument("--retries", type=int, default=3,
+    p.add_argument("--retries", type=page_flow.attempts, default=3,
                    help="Attempts per page load before giving up (default 3).")
     p.add_argument("--retry-delay", type=float, default=2.0,
                    help="Seconds before the first retry, doubling thereafter.")
