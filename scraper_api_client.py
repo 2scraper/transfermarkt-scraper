@@ -132,7 +132,7 @@ from bs4 import BeautifulSoup
 from product_parser import (parse_market_values, parse_club_squad,
                             parse_transfers, parse_player_detail,
                             detect_bot_challenge, detect_page_state, page_url,
-                            page_states_rows, canonical_url,
+                            page_states_rows, canonical_url, next_page_link,
                             site_host, is_supported_host, unsupported_reason,
                             HOSTS, player_url, club_squad_url,
                             MARKET_VALUES_URL, TRANSFERS_URL)
@@ -433,6 +433,7 @@ def scrape(args) -> int:
     pages_completed = 0
     pages_failed: List[int] = []
     final_url = args.url
+    pages = page_flow.PageSequence()
 
     rows, blocked_by, _status, page1_html, failure = _fetch_one_page(args, 1, args.url)
     if blocked_by is not None:
@@ -449,6 +450,7 @@ def scrape(args) -> int:
         pages_completed = 1
         fresh = dedupe_by_key(rows, seen_keys, key="sku")
         all_rows.extend(fresh)
+        pages.add(1, rows, next_page_link(page1_html, args.url))
 
         addressable = True
         if args.pages > 1 and args.mode in PAGINATED_MODES:
@@ -485,7 +487,7 @@ def scrape(args) -> int:
         elif args.pages > 1:
             for page_num in range(2, args.pages + 1):
                 url = page_url(args.url, page_num)
-                page_rows, page_blocked_by, _status, _html, failure = _fetch_one_page(args, page_num, url)
+                page_rows, page_blocked_by, _status, page_html, failure = _fetch_one_page(args, page_num, url)
                 if page_blocked_by is not None:
                     stop_reason = f"blocked_{page_blocked_by}"
                     blocked = True
@@ -495,6 +497,17 @@ def scrape(args) -> int:
                     stop_reason = ("page_not_found" if failure == "not_found"
                                    else failure)
                     pages_failed.append(page_num)
+                    break
+                # A page that only repeats earlier rows is not a fresh page:
+                # the listing's end, or a page the site did not serve. Not
+                # counted as completed either way (page_flow.PageSequence).
+                repeat = pages.add(page_num, page_rows,
+                                   next_page_link(page_html, url))
+                if repeat:
+                    logger.info("Page %d: not counted — it repeated an "
+                                "earlier page (%d row(s) dropped).",
+                                page_num, len(page_rows))
+                    stop_reason = repeat["stop_reason"]
                     break
                 pages_completed += 1
                 final_url = url
@@ -531,7 +544,8 @@ def scrape(args) -> int:
                       pages_requested=args.pages, pages_completed=pages_completed,
                       pages_failed=pages_failed, mode=args.mode,
                       source=site_host(final_url) or "transfermarkt.com",
-                      start_url=args.url, final_url=final_url)
+                      start_url=args.url, final_url=final_url,
+                      extra=pages.meta())
 
 
 def main() -> int:

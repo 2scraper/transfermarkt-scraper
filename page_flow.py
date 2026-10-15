@@ -91,7 +91,10 @@ on speculatively. Revisit if a live run's data supports it.
 rel="next">` reads `?page=2`, a bare query parameter, and a stateless fetch
 of `?page=2` measured 0 shared transfer ids against page 1 (25 rows each) —
 genuinely, independently addressable on every capture taken of it so far,
-which is the one mode `--concurrency` is enabled for.
+which is the one mode `--concurrency` is enabled for. Its END is not a
+missing page, though: a page number past the end serves the last page again
+(measured 2026-10-15), which `PageSequence` below tells apart from a fresh
+page.
 
 What this module deliberately does NOT contain
 ------------------------------------------------
@@ -378,6 +381,103 @@ def failure_reason(outcome) -> str:
         # the run's answer (STOP_NOT_FOUND), a later page's is a page lost.
         return "page_not_found"
     return f"blocked_{outcome.blocked_by}"
+
+
+# ---------------------------------------------------------------------------
+# A later page that serves an earlier page again
+# ---------------------------------------------------------------------------
+# The listing has ended: the page before the repeat carried no next-page
+# link, and the requested page served rows already seen. Complete.
+STOP_LISTING_ENDED = "listing_ended"
+# The page before carried a next-page link, yet the requested page served
+# rows already seen: pages were requested and not served. Not complete.
+STOP_PAGE_REPEATED = "page_repeated"
+
+
+class PageSequence:
+    """Which keys each served listing page carried, in page order.
+
+    Measured 2026-10-15 on `/transfers/neuestetransfers/statistik`: the site
+    answers a page number past the end with the LAST page again, HTTP 200,
+    its pager still marking the last page as current (`?page=5`, `?page=401`
+    and `?page=9999` all served page 4's two rows when the listing had four
+    pages). The default `/statistik/neuestetransfers` view held 20 rows that
+    day, with no pager, so `?page=2` served page 1 again. Treated as fresh
+    pages, both runs ended "complete" with pages counted that the site never
+    served.
+
+    A page repeats when it has rows and every one of them has a key already
+    seen on an earlier page. Whether that is the listing's end or a lost page
+    depends on the page before it: no next-page link there means the site
+    said the listing ends (`listing_ended`); a next-page link there means the
+    site promised a page and served an old one (`page_repeated`). A page
+    before it that was not served at all (a concurrent run where it failed)
+    counts as a promise, the cautious reading.
+    """
+
+    def __init__(self):
+        self._pages: Dict[int, tuple] = {}   # page_num -> (frozenset, next_url)
+        self.repeat: Optional[dict] = None
+
+    def add(self, page_num: int, rows, next_url: Optional[str]) -> Optional[dict]:
+        """Record one SERVED page (in page order). Returns the verdict dict
+        the first time a page repeats earlier ones, else None."""
+        keys = [getattr(r, "sku", None) for r in rows]
+        seen = set()
+        for earlier, (earlier_keys, _next) in self._pages.items():
+            if earlier < page_num:
+                seen |= earlier_keys
+        repeated = (self.repeat is None and page_num > 1 and keys
+                    and all(k is not None and k in seen for k in keys))
+        self._pages[page_num] = (frozenset(k for k in keys if k is not None),
+                                 next_url)
+        if not repeated:
+            return None
+        key_set = set(keys)
+        same_as = next((p for p, (ks, _n) in sorted(self._pages.items())
+                        if p < page_num and ks == key_set), None)
+        before = self._pages.get(page_num - 1)
+        promised = before is None or before[1] is not None
+        self.repeat = {
+            "page": page_num,
+            "same_as": same_as,
+            "stop_reason": STOP_PAGE_REPEATED if promised else STOP_LISTING_ENDED,
+        }
+        logger.info(
+            "Page %d served %s again (%d row(s), none new)%s.", page_num,
+            f"page {same_as}" if same_as else "rows from earlier pages",
+            len(keys),
+            " although the page before it linked to a next page — recording "
+            "it as a page not served" if promised else
+            "; the page before it had no next-page link, so the listing "
+            "ends there")
+        return self.repeat
+
+    def counts(self, page_num: int) -> bool:
+        """False for the repeated page and every page after it: they are not
+        pages of this listing and are not counted as completed."""
+        return self.repeat is None or page_num < self.repeat["page"]
+
+    def meta(self) -> dict:
+        """Sidecar keys describing the repeat, empty when there was none."""
+        if self.repeat is None:
+            return {}
+        return {"repeated_page": self.repeat["page"],
+                "repeat_of_page": self.repeat["same_as"],
+                "listing_pages": self.repeat["page"] - 1}
+
+
+def settle_repeats(outcomes) -> PageSequence:
+    """Run PageSequence over finished outcomes in page order — the concurrent
+    path's version of the check the sequential loop makes as it goes. Pages
+    that were not served are skipped; the page after one counts it as a
+    promise (see PageSequence)."""
+    seq = PageSequence()
+    for oc in sorted(outcomes, key=lambda o: o.page_num):
+        if oc.ok and oc.state != "not_found":
+            if seq.add(oc.page_num, oc.rows, getattr(oc, "next_url", None)):
+                break
+    return seq
 
 
 # At most one paid solve per page. A challenge that survives a solved token

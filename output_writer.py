@@ -461,7 +461,7 @@ def save(rows: Sequence[Any], out_prefix: str, fmt: str,
 # exist (its own 404 page, or a profile redirected away): a complete answer
 # with no rows, so exit 4, not a failed fetch.
 COMPLETE_STOP_REASONS = ("completed", "pagination_exhausted", "no_new_products",
-                         "single_page_mode", "not_found")
+                         "single_page_mode", "not_found", "listing_ended")
 
 
 def finish_run(rows: Sequence[Any], out_prefix: str, fmt: str,

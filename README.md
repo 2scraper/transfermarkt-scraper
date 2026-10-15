@@ -49,7 +49,9 @@ python3 playwright_scraper.py --mode market-values
 # A club's full squad — id is transfermarkt's own numeric club id
 python3 playwright_scraper.py --mode club-squad --club-id 281 --season 2025
 
-# The latest-transfers ledger, 3 pages (safe to run with --concurrency)
+# The latest-transfers ledger, up to 3 pages (safe to run with --concurrency).
+# The default view is filtered to players valued EUR 500k+ and can fit on one
+# page; see "How deep that listing goes" below for the unfiltered URL.
 python3 playwright_scraper.py --mode transfers --pages 3 --concurrency 3
 
 # One player's full profile
@@ -293,11 +295,35 @@ uses whichever path page 1 says to use; `--concurrency` remains
 usually unaddressable, but because running several workers concurrently
 against a mode that can rarely switch shape mid-run is untested here.
 
-**`/statistik/neuestetransfers` was and remains simpler.** Its
-`<link rel="next">` is a bare `?page=2`, and page 2 fetched statelessly
-shared **0** transfer ids with page 1 (25 rows each, measured 2026-09-10) —
-genuinely, independently addressable on every capture taken of it so far.
-That is the one mode `--concurrency` is enabled for.
+**`/statistik/neuestetransfers` is simpler.** Its `<link rel="next">` is a
+bare `?page=2`, and page 2 fetched statelessly shared **0** transfer ids with
+page 1 (25 rows each, measured 2026-09-10). That is the one mode
+`--concurrency` is enabled for.
+
+**How deep that listing goes depends on the day, and on a filter you do not
+see.** Measured 2026-10-15:
+
+- The default view applies the site's own market-value floor: its filter
+  form and tab links carry `minMarktwert=500000` (players valued at
+  EUR 500,000 or more). That day it held **20** transfers, under one 25-row
+  page, so it had no pager and no next link. That is the whole listing, not
+  a cap on what this scraper reads.
+- Without the floor, the same listing had **4 pages, 77 transfers** (25, 25,
+  25, 2), each page's next link a plain `&page=N` with the filters kept.
+  Pass that URL to read it:
+  `--mode transfers --url "https://www.transfermarkt.com/transfers/neuestetransfers/statistik?land_id=0&verein_land_id=0&wettbewerb_id=alle&minMarktwert=0&maxMarktwert=500000000" --pages 6`.
+- A page number past the end is answered **HTTP 200 with the last page
+  again**: `?page=2` of the 20-row view served page 1, and `?page=5`,
+  `?page=401` and `?page=9999` of the unfiltered view all served page 4.
+
+So a page whose rows were all seen on earlier pages is never counted as a
+fresh page. When the page before it had no next link, the listing ended
+there: `stop_reason: listing_ended`, exit 0, and the sidecar names the
+`repeated_page`, the page it repeated (`repeat_of_page`) and how many pages
+the listing had (`listing_pages`). When the page before it DID link onward,
+the site promised a page and served an old one: `stop_reason:
+page_repeated`, exit 6. Either way `pages_completed` counts only the pages
+the site actually served.
 
 ---
 
@@ -578,13 +604,13 @@ push for the same four reasons.
 
 | Code | Meaning |
 |---|---|
-| `0` | Complete |
+| `0` | Complete (including a listing that ended before `--pages`: `stop_reason: listing_ended`) |
 | `1` | Crash |
 | `2` | Bad usage (including a URL that is not a supported Transfermarkt host) |
 | `3` | Blocked — a bot-check/challenge page |
 | `4` | Zero rows, and the site's answer really was nothing: an empty squad, or the club, player or URL asked for does not exist (the site's own 404 page, or a profile id answered with a redirect elsewhere; `stop_reason: not_found`) |
 | `5` | Nothing obtained. Either the content was never fetched or read — a load timeout, a dead exit, or a served page that shows rows the parser could not read (`stop_reason: parser_found_nothing`, a markup change) — or a 2Captcha product call failed on its own terms (the Fingerprint API, or a `--cdp-endpoint` connection: bad key, rate limit, a Scraping Browser profile already in use). Distinct from `3` and `4`: nothing can be concluded about the site from it. A captcha-SOLVE failure is deliberately NOT this — it's a warning and the run continues, reporting `3` only if the page really was blocked. |
-| `6` | Partial — some pages fetched, then stopped early (including a later page that was refused, answered 404, or parsed to nothing while showing rows). Not necessarily a fault: for `--mode market-values`, this is the expected result on the rare run whose pagination link needs the fallback chain (see "the gallery pagination trap") and runs out of it; on the common run it does not happen at all. |
+| `6` | Partial — some pages fetched, then stopped early (including a later page that was refused, answered 404, parsed to nothing while showing rows, or served an earlier page again although the page before it linked onward: `stop_reason: page_repeated`). Not necessarily a fault: for `--mode market-values`, this is the expected result on the rare run whose pagination link needs the fallback chain (see "the gallery pagination trap") and runs out of it; on the common run it does not happen at all. |
 
 **A run that finds nothing writes nothing.** Last known good output is not
 replaced with `[]`; `--allow-empty` is the opt-out. `<out>.meta.json`

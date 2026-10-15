@@ -40,10 +40,24 @@ squad data yet answers 200 with a page that has no player rows on it, which
 is a correct "empty" answer, not a bug.
 
 **`--mode market-values` / `--mode transfers`** past page 1 — you may be one
-page past the end of the ranking/listing. Both modes stop and report a
-`no_new_products`/exhausted result rather than erroring, which is a
-*complete* answer, not a truncated one — check `stop_reason` in the
-`.meta.json` sidecar.
+page past the end of the ranking/listing. The site answers a page number past
+the end with the last page again (HTTP 200), so a page that brings no new
+rows is not counted. If the page before it had no next link, that is the end
+of the listing (`stop_reason: listing_ended`, exit 0, with `repeated_page`
+and `listing_pages` in the `.meta.json` sidecar). An empty page ends the run
+as `no_new_products`, also complete.
+
+**`--mode transfers` stops after one page of about 20 rows.** On 2026-10-15
+the default latest-transfers view (filtered by the site to players valued
+EUR 500,000+) held 20 transfers: one page, no pager. That is the site's whole
+listing for that filter. The unfiltered listing is longer; see "How deep that
+listing goes" in the README for its URL.
+
+## Exit 6 with `stop_reason: page_repeated`
+
+A page linked to a next page, and the next page served rows already seen.
+Pages were requested and not served, so the run is partial; the rows from
+the pages that were served are kept.
 
 ## Exit 5 with `stop_reason: parser_found_nothing`
 

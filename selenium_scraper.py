@@ -54,6 +54,7 @@ from captcha_solver import (detect_aws_waf, detect_recaptcha_v3,
 from product_parser import (parse_market_values, parse_club_squad,
                             parse_transfers, parse_player_detail,
                             detect_bot_challenge, page_states_rows, page_url,
+                            next_page_link,
                             site_host, is_supported_host, unsupported_reason,
                             HOSTS, player_url, club_squad_url,
                             MARKET_VALUES_URL, TRANSFERS_URL)
@@ -117,6 +118,10 @@ class PageOutcome:
     # A served page that shows rows the parser could not read: a markup
     # change, never an empty listing (page_flow.STOP_PARSER_FOUND_NOTHING).
     parse_failed: bool = False
+    # The served page's own next-page link (None when it has none):
+    # decides whether a repeated page is the listing's end or a page
+    # lost (page_flow.PageSequence).
+    next_url: Optional[str] = None
 
     @property
     def ok(self) -> bool:
@@ -544,12 +549,14 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
 
     outcome.rows = rows
     outcome.final_url = final_url
+    outcome.next_url = next_page_link(html, outcome.final_url)
     return outcome
 
 
 def scrape(args) -> int:
     outcomes: List[PageOutcome] = []
     seen_keys = set()
+    pages = page_flow.PageSequence()
     blocked = False
     stop_reason = "single_page_mode" if args.mode not in PAGINATED_MODES else "completed"
 
@@ -577,6 +584,7 @@ def scrape(args) -> int:
             pass
         else:
             seen_keys.update(r.sku for r in first.rows if r.sku is not None)
+            pages.add(1, first.rows, first.next_url)
             site_next = _next_page_href(session)
             addressable = page_flow.pagination_is_addressable(
                 args.mode, first.final_url, site_next)
@@ -602,6 +610,12 @@ def scrape(args) -> int:
                     blocked = outcome.blocked_by is not None
                     break
 
+                # A page that only repeats earlier rows is not a fresh page:
+                # the listing's end, or a page the site did not serve.
+                repeat = pages.add(page_num, outcome.rows, outcome.next_url)
+                if repeat:
+                    stop_reason = repeat["stop_reason"]
+                    break
                 fresh_count = sum(1 for r in outcome.rows
                                   if r.sku is None or r.sku not in seen_keys)
                 seen_keys.update(r.sku for r in outcome.rows if r.sku is not None)
@@ -628,15 +642,20 @@ def scrape(args) -> int:
 
     all_rows = []
     merged_seen = set()
+    counted = [o for o in outcomes if pages.counts(o.page_num)]
     for oc in sorted(outcomes, key=lambda o: o.page_num):
+        if not pages.counts(oc.page_num):
+            logger.info("Page %d: not counted — it repeated an earlier "
+                        "page (%d row(s) dropped).", oc.page_num, len(oc.rows))
+            continue
         fresh = dedupe_by_key(oc.rows, merged_seen, key="sku")
         if len(fresh) < len(oc.rows):
             logger.info("Page %d: dropped %d duplicate row(s).",
                         oc.page_num, len(oc.rows) - len(fresh))
         all_rows.extend(fresh)
 
-    ok_pages = [o for o in outcomes if o.ok]
-    failed_pages = [o.page_num for o in outcomes if not o.ok]
+    ok_pages = [o for o in counted if o.ok]
+    failed_pages = [o.page_num for o in counted if not o.ok]
     final_url = (max(ok_pages, key=lambda o: o.page_num).final_url
                  if ok_pages else args.url)
 
@@ -645,7 +664,8 @@ def scrape(args) -> int:
                       pages_requested=args.pages, pages_completed=len(ok_pages),
                       pages_failed=failed_pages, mode=args.mode,
                       source=site_host(final_url) or "transfermarkt.com",
-                      start_url=args.url, final_url=final_url)
+                      start_url=args.url, final_url=final_url,
+                      extra=pages.meta())
 
 
 def parse_args():

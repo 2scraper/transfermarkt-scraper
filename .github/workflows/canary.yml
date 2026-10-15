@@ -102,6 +102,26 @@ jobs:
             --out canary_run --dump-html canary_run.html
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
 
+      - name: Scrape the latest-transfers listing, unfiltered, 3 pages
+        id: transfers
+        # The other paginated mode, on its own pagination: ?page=N on a plain
+        # query string, and an end the site marks by serving the last page
+        # again. The default view is filtered by the site to players valued
+        # EUR 500,000+ and held one 20-row page on 2026-10-15, so it cannot
+        # show whether a second page is followed; the unfiltered view held
+        # 4 pages (77 transfers) the same day.
+        continue-on-error: true
+        env:
+          TRANSFERMARKT_CDP_ENDPOINT: ${{ secrets.TRANSFERMARKT_CDP_ENDPOINT }}
+          TRANSFERMARKT_PROXY: ${{ secrets.TRANSFERMARKT_PROXY }}
+        run: |
+          set +e
+          python3 playwright_scraper.py \
+            --mode transfers --pages 3 \
+            --url "https://www.transfermarkt.com/transfers/neuestetransfers/statistik?land_id=0&verein_land_id=0&wettbewerb_id=alle&minMarktwert=0&maxMarktwert=500000000" \
+            --out canary_transfers --dump-html canary_transfers.html
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
       - name: Interpret the exit code
         id: verdict
         env:
@@ -213,6 +233,62 @@ jobs:
           sys.exit(1 if fail else 0)
           EOF
 
+      - name: Check the latest-transfers run
+        # Runs even when the market-values checks above failed, so one
+        # mode's break does not hide the other's.
+        if: ${{ !cancelled() }}
+        env:
+          CODE: ${{ steps.transfers.outputs.exit_code }}
+        run: |
+          if [ "$CODE" != "0" ]; then
+            echo "::error::--mode transfers exited $CODE (0 expected; 3 blocked, 4 zero rows, 5 nothing obtained, 6 partial — including stop_reason page_repeated, a page linked onward that served an earlier page again). canary_transfers.meta.json and canary_transfers_page*_debug.html in the artifacts say which."
+            exit 1
+          fi
+          python3 - <<'EOF'
+          import json, sys
+          from pathlib import Path
+
+          rows = json.loads(Path("canary_transfers.json").read_text())
+          meta = json.loads(Path("canary_transfers.meta.json").read_text())
+          fail = []
+
+          # Tests the pagination and the parser, not the transfer season:
+          # more than one page's worth of rows (25 a page) means a second
+          # page was followed, whatever the listing's depth that day.
+          if meta.get("pages_completed", 0) < 2:
+              fail.append(f"only {meta.get('pages_completed')} page(s) served "
+                          f"(stop_reason={meta.get('stop_reason')!r}); the "
+                          f"unfiltered listing had 4 on 2026-10-15")
+          if len(rows) <= 25:
+              fail.append(f"only {len(rows)} rows: no second page's worth")
+          if meta.get("status") != "complete" or meta.get("stop_reason") not in (
+                  "completed", "listing_ended"):
+              fail.append(f"status={meta.get('status')!r} "
+                          f"stop_reason={meta.get('stop_reason')!r}")
+          skus = [r.get("sku") for r in rows]
+          if len(set(skus)) != len(skus):
+              fail.append("a transfer id appears twice: a page was counted twice")
+          pages = [r.get("page") for r in rows]
+          if pages != sorted(pages):
+              fail.append("rows are not in page order")
+          # Every row is built only when both ids are found, so these are
+          # 100%; the names come from the same cells.
+          for field, floor in (("sku", 1.0), ("player_id", 1.0), ("url", 1.0),
+                               ("title", 0.95), ("from_club", 0.9),
+                               ("fee_type", 1.0)):
+              got = sum(1 for r in rows if r.get(field) not in (None, ""))
+              if rows and got / len(rows) < floor:
+                  fail.append(f"{field} present on only {got}/{len(rows)} rows "
+                              f"(floor {floor:.0%})")
+
+          for line in fail:
+              print(f"::error::{line}")
+          print(f"[canary transfers] {len(rows)} rows, "
+                f"status={meta.get('status')} stop_reason={meta.get('stop_reason')} "
+                f"pages={meta.get('pages_completed')}/3")
+          sys.exit(1 if fail else 0)
+          EOF
+
       - name: Upload run artifacts (output, HTML snapshot, debug dumps)
         # Always, not just on failure: a run that returns the WRONG numbers
         # with no error is exactly the regression that needs the actual bytes
@@ -227,5 +303,9 @@ jobs:
             canary_run.meta.json
             canary_run.html*
             canary_run_page*_debug.*
+            canary_transfers.json
+            canary_transfers.meta.json
+            canary_transfers.html*
+            canary_transfers_page*_debug.*
           if-no-files-found: ignore
           retention-days: 14
