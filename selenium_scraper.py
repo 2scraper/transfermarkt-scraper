@@ -53,7 +53,7 @@ from captcha_solver import (detect_aws_waf, detect_recaptcha_v3,
                             solve_recaptcha, AWS_WAF_COOKIE, INJECT_TOKEN_JS)
 from product_parser import (parse_market_values, parse_club_squad,
                             parse_transfers, parse_player_detail,
-                            detect_bot_challenge, page_url,
+                            detect_bot_challenge, page_states_rows, page_url,
                             site_host, is_supported_host, unsupported_reason,
                             HOSTS, player_url, club_squad_url,
                             MARKET_VALUES_URL, TRANSFERS_URL)
@@ -114,10 +114,17 @@ class PageOutcome:
     blocked_by: Optional[str] = None
     load_failed: bool = False
     state: Optional[str] = None
+    # A served page that shows rows the parser could not read: a markup
+    # change, never an empty listing (page_flow.STOP_PARSER_FOUND_NOTHING).
+    parse_failed: bool = False
 
     @property
     def ok(self) -> bool:
-        return not self.load_failed and self.blocked_by is None
+        # A "not found" answer is the run's answer on page 1, but on a later
+        # page it is a page the run did not get.
+        lost = self.state == "not_found" and self.page_num > 1
+        return (not self.load_failed and self.blocked_by is None
+                and not self.parse_failed and not lost)
 
 
 class _Session:
@@ -270,7 +277,7 @@ def _next_page_href(session) -> Optional[str]:
 
 
 def handle_captcha_if_present(session, args, ready_selector: str,
-                              proxy=None) -> bool:
+                              proxy=None, *, budget) -> bool:
     driver = session.driver
     d = _driver(session)
     html = d["content"]()
@@ -298,7 +305,7 @@ def handle_captcha_if_present(session, args, ready_selector: str,
         logger.info("%s detected via %s, but content is already on the "
                     "page — not solving it.", challenge.kind, challenge.source)
         return False
-    # Section 19: "unsolvable" is a property of a PAGE -- it means the page
+    # "Unsolvable" is a property of a PAGE -- it means the page
     # carries no widget. An AWS WAF CHALLENGE-action page is exactly that:
     # challenge.js only, no puzzle rendered, nothing for a solver to work
     # on. Sending it anyway buys a token for a widget that was never there,
@@ -306,7 +313,7 @@ def handle_captcha_if_present(session, args, ready_selector: str,
     # that runs the script passes this by itself, which is why the wait
     # above is still the right thing to do for it.
     if challenge.is_aws_waf and not challenge.has_captcha_widget:
-        # No widget, so nothing to buy (§19: "unsolvable" is a property of a
+        # No widget, so nothing to buy ("unsolvable" is a property of a
         # page). But this action is a script a real browser runs by itself,
         # so give it the time it measurably takes before judging the page.
         logger.info("AWS WAF %s action and no captcha widget on the page — "
@@ -331,6 +338,10 @@ def handle_captcha_if_present(session, args, ready_selector: str,
         logger.warning("No 2captcha API key set, so this challenge is not "
                        "being solved. 2captcha does solve this type — set "
                        "TWOCAPTCHA_KEY (or pass --twocaptcha-key) to use it.")
+        return False
+    # Checked before the purchase, against the PAGE's allowance: a retry from
+    # a fresh browser or another exit does not earn a second paid solve.
+    if not budget.take():
         return False
     try:
         token = solve_recaptcha(challenge, args.twocaptcha_key,
@@ -374,6 +385,8 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
     html, state, load_failed = None, "ok", False
 
     block_retries = args.proxy_block_retries if (pool and len(pool) > 1) else 0
+    # ONE allowance for this page, across every block retry and rotation.
+    budget = page_flow.SolveBudget()
 
     for block_attempt in range(block_retries + 1):
         logger.info("Fetching page %d: %s", page_num, url)
@@ -409,7 +422,8 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
             break
 
         if handle_captcha_if_present(session, args, ready_selector,
-                                    proxy=pool.current if pool else None):
+                                    proxy=pool.current if pool else None,
+                                    budget=budget):
             time.sleep(1)
 
         html = d["content"]() or ""
@@ -431,7 +445,20 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         outcome.load_failed = True
         return outcome
 
+    if state == "content" and page_flow.redirected_off_entity(
+            args.mode, url, d["current_url"]()):
+        state = "not_found"
     outcome.state = state
+
+    if state == "not_found":
+        # The site's own answer that the address names nothing: a 404 page,
+        # or a profile/squad URL redirected to an unrelated page. Not a
+        # block (no retry, no solve) and not an empty listing.
+        logger.error("Page %d: the site says %s does not exist (now at %s). "
+                     "Check --club-id / --player-id / --url.", page_num, url,
+                     d["current_url"]())
+        outcome.final_url = d["current_url"]()
+        return outcome
 
     if state == "blocked":
         debug_html = f"{args.out}_page{page_num}_debug.html"
@@ -461,6 +488,10 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
 
     vendor = (detect_bot_challenge(html, url=d["current_url"]())
               if state != "content" else None)
+    if not vendor and page_flow.counts_as_blocked(state):
+        # Classified as a challenge (e.g. by its response header) with no
+        # vendor marker in the body: still not a page to parse.
+        vendor = state
     if vendor:
         debug_html = f"{args.out}_page{page_num}_debug.html"
         with open(debug_html, "w", encoding="utf-8") as f:
@@ -503,6 +534,14 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
             logger.warning("Could not capture screenshot: %s", e)
         logger.warning("0 rows parsed — saved what the browser saw to %s.", debug_html)
 
+    if not rows and state == "content" and page_states_rows(html, args.mode):
+        # The page shows rows and the parser read none of them: a markup
+        # change, not an empty listing. Reported as a parser failure so the
+        # run cannot end "complete" with exit 4.
+        logger.error("Page %d shows rows but the parser read none — a "
+                     "parser failure, not an empty result.", page_num)
+        outcome.parse_failed = True
+
     outcome.rows = rows
     outcome.final_url = final_url
     return outcome
@@ -530,9 +569,10 @@ def scrape(args) -> int:
         outcomes.append(first)
 
         if not first.ok:
-            stop_reason = ("page_load_timeout" if first.load_failed
-                           else f"blocked_{first.blocked_by}")
+            stop_reason = page_flow.failure_reason(first)
             blocked = first.blocked_by is not None
+        elif first.state == "not_found":
+            stop_reason = page_flow.STOP_NOT_FOUND
         elif args.mode not in PAGINATED_MODES:
             pass
         else:
@@ -558,8 +598,7 @@ def scrape(args) -> int:
                 outcome = _fetch_one_page(session, args, pool, page_num, url)
                 outcomes.append(outcome)
                 if not outcome.ok:
-                    stop_reason = ("page_load_timeout" if outcome.load_failed
-                                   else f"blocked_{outcome.blocked_by}")
+                    stop_reason = page_flow.failure_reason(outcome)
                     blocked = outcome.blocked_by is not None
                     break
 
@@ -617,21 +656,21 @@ def parse_args():
     p.add_argument("--club-id", default=None)
     p.add_argument("--season", default=None)
     p.add_argument("--player-id", default=None)
-    p.add_argument("--pages", type=int, default=1)
-    p.add_argument("--delay", type=float, default=2.0)
-    p.add_argument("--concurrency", type=int, default=1,
+    p.add_argument("--pages", type=page_flow.bounded(int, 1, "--pages"), default=1)
+    p.add_argument("--delay", type=page_flow.bounded(float, 0, "--delay"), default=2.0)
+    p.add_argument("--concurrency", type=page_flow.bounded(int, 1, "--concurrency"), default=1,
                    help="Ignored in this engine — see playwright_scraper.py.")
     p.add_argument("--retries", type=page_flow.attempts, default=3)
-    p.add_argument("--retry-delay", type=float, default=2.0)
+    p.add_argument("--retry-delay", type=page_flow.bounded(float, 0, "--retry-delay"), default=2.0)
     p.add_argument("--format", choices=["json", "csv", "both"], default="both")
     p.add_argument("--out", default="transfermarkt_products")
     p.add_argument("--proxy", default=None)
     p.add_argument("--proxy-file", default=None)
     p.add_argument("--proxy-rotate", choices=list(ROTATE_MODES), default="per-run")
-    p.add_argument("--proxy-sessions", type=int, default=None,
+    p.add_argument("--proxy-sessions", type=page_flow.bounded(int, 1, "--proxy-sessions"), default=None,
                    help="With --proxy pointing at a 2Captcha proxy gateway, mint this many session-pinned exits from that one credential instead of keeping a file of them. Each session is a different exit address (measured 2026-09-17: ten sessions, ten distinct addresses). Has no effect with --proxy-file, and is refused for a non-2Captcha host.")
     p.add_argument("--proxy-shuffle", action="store_true")
-    p.add_argument("--proxy-block-retries", type=int, default=2)
+    p.add_argument("--proxy-block-retries", type=page_flow.bounded(int, 0, "--proxy-block-retries"), default=2)
     p.add_argument("--twocaptcha-key", default=None)
     p.add_argument("--allow-empty", action="store_true")
     p.add_argument("--fingerprint", action="store_true")
@@ -649,7 +688,19 @@ def parse_args():
     p.add_argument("--headless", action="store_true", default=True)
     p.add_argument("--headful", dest="headless", action="store_false")
     args = p.parse_args()
+    # Captured BEFORE the environment is applied: afterwards a URL from
+    # `.env` is indistinguishable from one the user typed.
+    typed_url = args.url
     env_config.apply(args)
+
+    if not typed_url and args.url:
+        why = page_flow.env_url_conflict(args.url, args.mode, args.club_id,
+                                         args.player_id, args.season)
+        if why:
+            logger.warning("Not using TRANSFERMARKT_URL from the environment: "
+                           "%s. Building the --mode %s URL instead.", why,
+                           args.mode)
+            args.url = None
 
     if not args.url:
         if args.mode == "market-values":

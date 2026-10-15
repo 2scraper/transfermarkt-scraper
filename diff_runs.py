@@ -50,7 +50,7 @@ import re
 import sys
 from typing import Dict, List, Tuple
 
-from output_writer import UNIQUE_BY_SKU_MODES
+from output_writer import UNIQUE_BY_SKU_MODES, _atomic
 
 TRACKED_FIELDS = (
     # Family prefix, both schemas.
@@ -223,7 +223,9 @@ def main() -> int:
     _print_summary(result)
 
     if args.out:
-        with open(args.out, "w", encoding="utf-8") as f:
+        # Through the same atomic writer as the scrapers' output, so a
+        # failed write cannot leave a truncated report over a good one.
+        with _atomic(args.out) as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
         print(f"[+] Full diff written to {args.out}")
 

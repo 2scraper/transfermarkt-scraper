@@ -11,7 +11,87 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 > script of yours passes 0, pass **1**: the flag counts ATTEMPTS, so 1 means
 > "try once and do not retry".
 
+> **Behaviour changes in this batch:**
+>
+> - **Exit codes.** A served page that shows rows the parser could not read
+>   is now `stop_reason: parser_found_nothing`: exit 5 on page 1 (was 4,
+>   "zero rows"), exit 6 on a later page. A club, player or URL the site
+>   says does not exist (its own 404 page, or an unknown player id
+>   redirected to the ranking) is `stop_reason: not_found` and exit 4 in
+>   every engine; Playwright used to retry it as a block and end with exit 3.
+>   A later page answering 404 is exit 6, not the end of the listing.
+> - **Newly rejected flag values** (exit 2, naming the flag): `--pages`,
+>   `--concurrency` and `--proxy-sessions` below 1; `--delay`,
+>   `--retry-delay` and `--proxy-block-retries` below 0; in
+>   `scraper_api_client.py`, `--retries` and `--retry-delay` below 0 and
+>   `--timeout` below 1.
+> - **File modes.** Outputs are written to a temporary file and renamed into
+>   place. A new file gets `0666` minus your umask, as before; an existing
+>   file keeps its own mode.
+> - **CSV.** A text cell starting with `=`, `+`, `-`, `@`, a tab or a line
+>   break is prefixed with `'` in the CSV only; `csv_cells_escaped` in the
+>   sidecar counts them.
+> - **`TRANSFERMARKT_URL`** is commented out in `.env.example`, and when set
+>   it no longer overrides `--club-id` / `--player-id` / `--season` or a
+>   `--mode` whose page kind it does not match.
+> - **The canary fails when it is blocked.** A bare-runner exit 3 used to
+>   end green with a notice.
+
 ### Fixed
+
+- **A failed write destroyed the previous good output.** `write_json`,
+  `write_csv`, the `.meta.json` sidecar and `diff_runs.py --out` all opened
+  their target with `open(path, "w")`, which truncates first: a dump that
+  failed part-way left 10 bytes of invalid JSON where a 732-byte good file
+  had been. All four now write a temporary file in the same directory,
+  `fsync` it and rename it over the target, removing it on any error.
+- **`.env.example` made `--club-id` and `--player-id` silently scrape the
+  wrong page.** It shipped `TRANSFERMARKT_URL=<market-values URL>`, and the
+  environment fills `--url` before an engine builds the mode's own URL, so
+  with a copied example `--mode club-squad --club-id 27` scraped the
+  market-values ranking and labelled it club 27's squad (5 rows from the
+  suite's real fixture). Every entry point now captures the typed `--url`
+  before reading the environment.
+- **A blocked page could buy one solve per exit.** Each block-retry from a
+  fresh exit reached the solver with a new allowance, so one page bought
+  `--proxy-block-retries + 1` solves (3, measured with a stubbed solver and a
+  3-exit pool). One allowance per page is now checked before every purchase
+  in all three browser engines; the same probe now buys 1.
+- **The engines disagreed about a 404.** Playwright passed the status and
+  retried a 404 as a block (exit 3); Selenium and pyppeteer had no status and
+  called it empty (exit 4). The site's own 404 page and the edge's bare
+  nginx 404 are now recognised from the body, so all four engines answer
+  `not_found`. The nginx page is the one the canary met on 2026-10-04 and
+  2026-10-05, following the doubled gallery next-link: those two red runs
+  were that known pagination case.
+- **An unknown player id was reported as an empty result.** The site
+  answers it with HTTP 200 and a redirect to the market-values ranking
+  (measured 2026-10-15). A profile or squad URL whose id is gone from the
+  final URL (or, for the Scraper API, from the page's own canonical URL) is
+  now `not_found`.
+- **A page classified as a captcha with no vendor marker in its body was
+  parsed** as an ordinary empty page. It is now reported as blocked.
+- **`--concurrency` could report a complete run with a page missing.** A
+  worker that died after taking a page from the queue left that page in
+  neither the results nor the unattempted list. It is now a failed page.
+- **The credential scan skipped everything under a directory named
+  `venv`.** Its exclusions were matched against the absolute path, so a
+  clone under `.../venv/` scanned 0 files and reported clean. They are now
+  matched inside the repository, a scan of 0 files fails, and `.json`,
+  `.sh`, `.toml`, `.html` and `.cfg` files are scanned too.
+- **Captures were committable.** A root `--dump-html` file, its `.pageN`
+  siblings and `live/` / `out/` / `captures/` directories are now ignored;
+  `index.html` still commits.
+- **README:** the exit-5 row now covers a run that obtained nothing, the
+  products table reports the measured Scraping Browser auto-solve result and
+  what the solver API run did and did not show, and the `--locale` sentence
+  no longer says the flag does not exist.
+- Comments, docstrings, the canary and the review prompt no longer cite
+  private working notes by section number; the rule is stated in place, and
+  a suite check fails if such a citation returns. Released sections below
+  were edited only to remove those citations.
+- `tests.yml` runs `.github/ci_checks.py --sample-check` instead of an
+  inline copy of it.
 
 - **`--retries 0` fetched nothing and called it a result.** The load loop is
   `range(1, retries + 1)`, so 0 never runs it and the engine judged
@@ -48,7 +128,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Two static checks this suite did not have**, both ported from the audit
   that ran across the family on 2026-09-16 and 2026-09-17:
   - **calls into a shared module are bound against the callee's real
-    signature** (§17's check #1). It catches a call whose arguments do not
+    signature**. It catches a call whose arguments do not
     fit, and a call to a name the shared module does not define at all —
     both of which reach a live run as a crash on the first fetch while
     import, `--help`, `compileall` and the undefined-name walk stay green.
@@ -191,8 +271,8 @@ Auto-solve times: 30.0s, 51.5s, 58.0s, 63.0s, ~34s. The solver API was not
 called in any of them. Cost is $0.00145 per solve, charged for the auto-solve
 itself.
 
-The control is what makes this a finding rather than a hope: section 19's
-rule is that a block expiring on its own produces exactly the observation
+The control is what makes this a finding rather than a hope: the rule is
+that a block expiring on its own produces exactly the observation
 "we solved it and the page came back". Here the same endpoint, on the same
 site, with nothing solving, stayed blocked through eight consecutive
 reloads.
@@ -215,7 +295,7 @@ reloads.
   Both carry `window.gokuProps`, so reading the props cannot tell them
   apart; the presence of `captcha.js` can, and the detector was already
   parsing it without using it. A challenge-action page renders no widget —
-  section 19's "unsolvable is a property of a PAGE" — so sending one to a
+  "unsolvable is a property of a PAGE" — so sending one to a
   solver buys a token for a puzzle that was never there. `createTask`
   validates little enough to take the money: a fabricated task was accepted
   and charged. All three engines now refuse to send a widget-less AWS WAF
@@ -625,7 +705,7 @@ its network position.
   case explicitly, because it means the exit — not the solver — is the
   variable.
 - 26 offline checks covering the above (395 → **421** with no engine library
-  installed, 448 → **474** with all three), including §18's control that
+  installed, 448 → **474** with all three), including the control that
   every new marker counts zero on five real captured pages and non-zero on
   the challenge, and that a served page carrying 2Captcha's own injected WAF
   hunter still classifies as content.
@@ -689,7 +769,7 @@ the suite, so the suite was red for anyone who followed the instructions.
   `solveFinished` / `solveFailed`; the pyppeteer engine did the
   `browserWSEndpoint` connect and then nothing. A run with `--cdp-endpoint`
   therefore got auto-solve on one engine and silently not on its twin —
-  engine drift (§6) on the paid path. Now identical in both, with the same
+  engine drift on the paid path. Now identical in both, with the same
   graceful log when an endpoint does not carry the Captcha domain. Selenium
   stays out on purpose, not by oversight: `debuggerAddress` takes a bare
   host:port with nowhere for a password, so it cannot reach an
@@ -717,7 +797,7 @@ five was fetched live before being added — a market-values ranking page in
 each, a full club-squad page in German, and the same real player's profile
 (Erling Haaland, id 418560) in all four new locales — and diffed against
 the equivalent English capture field-by-field, per this repo's own "measure
-before claiming" rule and CLAUDE.md's mediamarkt.lu lesson about same-brand
+before claiming" rule and the mediamarkt.lu lesson about same-brand
 hosts.
 
 Structurally the five hosts are identical: same `table.items`/`posrela`/
@@ -915,8 +995,8 @@ is fixed below and was wrong before.
   panel's own copy of this field is never truncated and is now the primary
   source, with `_text_or_title` as a defensive fallback for a profile
   missing that panel.
-- **Exit code `5` ("remote API error" in this family's own contract,
-  CLAUDE.md §9) was never used.** A Fingerprint API failure or a
+- **Exit code `5` ("remote API error" in this family's own contract) was
+  never used.** A Fingerprint API failure or a
   `--cdp-endpoint` connect failure raised a bare `RuntimeError` no engine
   caught, so either one reached the interpreter as an unhandled exception
   and exited `1` — a raw traceback, no run-metadata sidecar — regardless of
@@ -948,7 +1028,7 @@ is fixed below and was wrong before.
 
 - **`scraper_api_client.py`** — the fourth, browserless engine this
   family's other members ship, ported from `mediamarkt-scraper` (site
-  knowledge there is `~none`, per CLAUDE.md's own module table) rather than
+  knowledge there is `~none`) rather than
   written on spec. v0.1 shipped without it reasoning that porting a fourth
   engine with no measured page needing it would be dead code; that
   reasoning did not hold once a plain, unauthenticated fetch was confirmed

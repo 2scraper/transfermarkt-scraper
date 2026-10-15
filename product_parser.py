@@ -53,8 +53,7 @@ v0.1 of this repo verified only the English `.com` site. v0.3 adds four more
 (`de`, `.world`=ru, `.co.kr`=ko, `.jp`) — see `LOCALE_BY_HOST` for exactly
 which hosts, and its comment for what was checked before each was added.
 Structurally these five are identical (same classes, same URL/id scheme);
-what differs is TEXT, normalised into a single English vocabulary per
-CLAUDE.md's convention for this family:
+what differs is TEXT, normalised into a single English vocabulary:
 
   * money — `parse_market_value(text, locale=...)`, above.
   * position / nationality — `translate_position` / `translate_nationality`,
@@ -87,7 +86,7 @@ from bs4 import BeautifulSoup
 
 from output_writer import Player, Transfer
 
-# "Fail loudly" (CLAUDE.md §8): a parser returning [] or None on a markup
+# "Fail loudly": a parser returning [] or None on a markup
 # change it didn't expect must say so, not just report success with fewer
 # rows. Every list parser below logs the table-not-found case and a summary
 # of any row it had to skip; parse_player_detail logs the header-not-found
@@ -101,9 +100,8 @@ logger = logging.getLogger("product_parser")
 # ---------------------------------------------------------------------------
 # Transfermarkt runs the same platform under many country TLDs
 # (transfermarkt.de, .world, .co.kr, .jp, .es, ...), the way MediaMarkt runs
-# one platform across ten. Per CLAUDE.md §5 (the "mediamarkt.lu lesson": a
-# same-brand, hreflang-listed host that turned out to run on a different
-# platform entirely) a locale is never assumed to behave identically just
+# one platform across ten. A same-brand, hreflang-listed host can turn out
+# to run on a different platform entirely (mediamarkt.lu did), so a locale is never assumed to behave identically just
 # because it shares the brand — each one below was fetched live (2026-09-16)
 # and its DOM checked against the English site before being added here.
 #
@@ -159,9 +157,8 @@ def unsupported_reason(url: str) -> Optional[str]:
     if "transfermarkt" in host:
         return (f"is a Transfermarkt locale site, but only {sorted(HOSTS)} "
                 f"are verified in this repo (v0.3) — its markup was not "
-                f"checked and may differ (see CLAUDE.md's mediamarkt.lu "
-                f"lesson: a same-brand host is not proof of the same "
-                f"platform)")
+                f"checked and may differ (a same-brand host is not proof "
+                f"of the same platform)")
     return "is not a Transfermarkt site"
 
 
@@ -200,6 +197,22 @@ def club_squad_url(club_id: str, season: Optional[str] = None, slug: str = "x") 
 # measured 2026-09-10 (page 2 shared 0 transfer ids with page 1, 25 rows
 # each). `market-values`'s pagination is NOT this shape — see page_flow.py's
 # "gallery pagination trap" — and never routes through this function.
+def url_kind(url: Optional[str]) -> Optional[str]:
+    """Which --mode a Transfermarkt URL addresses, or None when its path is
+    not one this repo recognises (a filtered variant, say). Paths are the
+    same on every supported host."""
+    path = urlparse(url or "").path
+    if _PLAYER_ID_RE.search(path):
+        return "player"
+    if re.search(r"/kader/verein/\d+", path):
+        return "club-squad"
+    if "neuestetransfers" in path:
+        return "transfers"
+    if "wertvollstespieler" in path or "marktwertetop" in path:
+        return "market-values"
+    return None
+
+
 PAGE_PARAM = "page"
 
 
@@ -363,7 +376,7 @@ def parse_market_value(
 # ---------------------------------------------------------------------------
 # Locale text normalisation (positions, nationalities, labels)
 # ---------------------------------------------------------------------------
-# Per CLAUDE.md's convention for this family: normalise locale-specific text
+# Normalise locale-specific text
 # into a single English vocabulary rather than shipping five different sets
 # of position/nationality strings for one underlying fact. Every mapping
 # below was measured, not guessed — extracted from real captures (2026-09-16)
@@ -697,12 +710,12 @@ def normalize_date(text: Optional[str], locale: str = DEFAULT_LOCALE) -> Optiona
 #
 # Each marker below was counted on 17 known-good captures on disk (both
 # listing kinds, a squad, a transfer list and player profiles across five
-# locales): 0 occurrences of every one, per §18's "count it on a page you
-# know is good". A bare `awswaf` substring and the phrase "Human
+# locales): 0 occurrences of every one ("count it on a page you know is
+# good"). A bare `awswaf` substring and the phrase "Human
 # Verification" also scored 0 but are deliberately NOT used: the first also
 # matches 2Captcha's own auto-solve extension, which injects
 # `content/captcha/amazon_waf/interceptor.js` into every page the Scraping
-# Browser loads (the `cf-turnstile` trap of §19, one vendor over), and the
+# Browser loads (the `cf-turnstile` trap, one vendor over), and the
 # second is ordinary English that a real page could carry.
 BOT_CHALLENGE_MARKERS = {
     "AWS WAF": ("captcha.awswaf.com", "token.awswaf.com",
@@ -770,13 +783,74 @@ def _header(headers: Optional[Dict[str, str]], name: str) -> Optional[str]:
     return None
 
 
+# The site's own error page. Captured 2026-10-15 for an unknown path and for
+# a club id that does not exist, on .com and on .de: HTTP 404, title
+# "Error | Transfermarkt", and `<p class="text1"><b>ERROR 404</b></p>` in the
+# main column. The marker is read from the BODY so that Selenium and
+# pyppeteer, which have no status code to pass, reach the same `not_found`
+# as Playwright and the Scraper API. 0 occurrences on the captured ranking,
+# squad, transfers and profile pages.
+#
+# The second shape is the bare nginx page the edge serves for the doubled
+# gallery next-link (`.../galerie/{uuid}/page/5//page/2`): captured by the
+# canary on 2026-10-04 and 2026-10-05, `<title>404 Not Found</title>`, 144
+# bytes. Read without its status it used to classify as `empty`, which a
+# chained run would take for the end of the listing.
+_NOT_FOUND_RE = re.compile(r'<p class="text1">\s*<b>[^<]*\b404\b'
+                           r'|<title>\s*404 Not Found\s*</title>', re.IGNORECASE)
+NOT_FOUND_STATUSES = (404, 410)
+
+
+def is_not_found_page(html: Optional[str], status: Optional[int] = None) -> bool:
+    return status in NOT_FOUND_STATUSES or bool(html and _NOT_FOUND_RE.search(html))
+
+
+_CANONICAL_RES = (re.compile(r'<link rel="canonical" href="([^"]+)"'),
+                  re.compile(r'<meta property="og:url" content="([^"]+)"'))
+
+
+def canonical_url(html: Optional[str]) -> Optional[str]:
+    """The page's own address as it states it, or None. Stands in for the
+    final URL where an engine cannot see where a redirect ended. Profiles
+    and squads carry `<link rel="canonical">`; the market-values ranking
+    carries only `og:url` (both checked 2026-10-15)."""
+    for pattern in _CANONICAL_RES:
+        m = pattern.search(html or "")
+        if m:
+            return m.group(1)
+    return None
+
+
+def page_states_rows(html: Optional[str], mode: str) -> bool:
+    """Whether the page itself shows rows the parser should have read.
+
+    Used only after a `content` page parsed to nothing, to tell a parser
+    failure (the rows are on the page, the parser lost them) from a real
+    empty answer (an empty squad, a listing past its end). A listing states
+    rows when its `table.items` body links to player profiles. A profile
+    states its row when it has a `header.data-header` and no `table.items`:
+    a club's squad page carries the same header class above its table
+    (checked 2026-10-15 on Bayern's squad and Haaland's profile).
+    """
+    if not html:
+        return False
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.select_one("#yw1 table.items") or soup.select_one("table.items")
+    if mode == "player":
+        return table is None and soup.select_one("header.data-header") is not None
+    if table is None:
+        return False
+    return table.select_one('tbody a[href*="/profil/spieler/"]') is not None
+
+
 def detect_page_state(html: str, status: Optional[int] = None,
                       url: Optional[str] = None,
                       headers: Optional[Dict[str, str]] = None) -> str:
-    """content | blocked | captcha | empty — see page_flow.STATE_POLICY.
+    """content | blocked | captcha | empty | not_found — see
+    page_flow.STATE_POLICY.
 
     The checks below are ordered by HOW MUCH EACH ONE PROVES, not by how
-    cheap it is (§17's classification-order trap). Three of the four
+    cheap it is (the classification-order trap). Three of the four
     orderings here were wrong before v0.4.1 and each cost a different bug:
 
     1. `x-amzn-waf-action` is the front naming its own action. Unambiguous,
@@ -788,11 +862,11 @@ def detect_page_state(html: str, status: Optional[int] = None,
        not the site's at all — 2Captcha's auto-solve extension injects
        hunter scripts into every page the Scraping Browser loads, and a
        served page flipping to exit 3 on one of those is a failure this
-       family has already had twice (§18, §19). `_EXTENSION_TAG_RE` strips
+       family has already had twice. `_EXTENSION_TAG_RE` strips
        those too; this ordering is the second line of defence.
     4. The vendor scan then only REFINES the reason for a page that has
-       already failed to look like content — which is all §18 ever wanted it
-       to do.
+       already failed to look like content — which is all a vendor marker
+       can safely do.
     5. A non-2xx status comes LAST among the positive tests, because it
        proves something went wrong without saying what. Putting it first is
        what used to make this site's captcha unsolvable: AWS WAF serves the
@@ -823,6 +897,13 @@ def detect_page_state(html: str, status: Optional[int] = None,
     if status_ok and (_has_any(html, 'header class="data-header"')
                       or _has_any(html, 'table class="items"')):
         return "content"
+
+    # The site's own 404 page, before the vendor scan: it is the site
+    # answering, and its loose markers ("Access Denied" and the like) must
+    # not turn "this does not exist" into a refusal that is retried and
+    # ends exit 3.
+    if is_not_found_page(html, status):
+        return "not_found"
 
     vendor = detect_bot_challenge(html, url=url)
     if vendor:
