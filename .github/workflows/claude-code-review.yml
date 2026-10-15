@@ -83,8 +83,8 @@ jobs:
             diff_runs.py); there are two row schemas, Player and Transfer
             (output_writer.py), and a change to one should not silently affect
             the other; `page` and `row_index` must stay unique across a
-            paginated run (see product_parser.py and the tokopedia lesson in
-            CLAUDE.md); and `--mode market-values`'s pagination has a known
+            paginated run (see product_parser.py: a page number not threaded
+            into the parser produces colliding pairs); and `--mode market-values`'s pagination has a known
             "gallery pagination trap" that page_flow.py's
             pagination_is_addressable() specifically guards against — a
             change there deserves extra scrutiny.

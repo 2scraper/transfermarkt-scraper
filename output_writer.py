@@ -11,9 +11,8 @@ listing or a profile page describes a PERSON (or a club), and a transfer
 record describes an EVENT between two clubs. Folding both into one dataclass
 would mean a "from_club"/"to_club" pair sitting permanently null on every
 player row and a "position"/"market value" pair sitting permanently null on
-every transfer row — which is the exact column CLAUDE.md's own family rule
-says should not exist ("a column that is null on every row of every run
-should not exist"). So there are two row classes here, the way
+every transfer row — and a column that is null on every row of every run
+should not exist. So there are two row classes here, the way
 amazon-scraper added a second (`Review`) for the one mode that is not a
 product either:
 
@@ -42,8 +41,11 @@ directly so. That is also why diff_runs.py's price-monitoring model
 see that file's docstring.
 """
 
+import contextlib
 import csv
 import json
+import os
+import tempfile
 from dataclasses import dataclass, asdict, field, fields
 from datetime import datetime, timezone
 from typing import Optional, List, Set, Sequence, Any, Type
@@ -209,6 +211,78 @@ def dedupe_by_sku(rows: Sequence[Any], seen: Set[str]) -> List[Any]:
 LIST_CSV_SEPARATOR = " | "
 
 
+@contextlib.contextmanager
+def _atomic(path: str, newline: Optional[str] = None):
+    """Write to a temporary file beside `path`, then rename over it.
+
+    `open(path, "w")` truncates before a single byte is written, so a crash,
+    a kill, a full disk or a Ctrl-C halfway through `json.dump` leaves a
+    SHORTER file where a complete one was: the previous good run destroyed
+    by the attempt to replace it. Measured here before this was added: a
+    732-byte `out.json` came back as 10 bytes of invalid JSON when the dump
+    failed part-way.
+
+    * The temp file goes in the target's own directory, because `os.replace`
+      is atomic only within one filesystem.
+    * `fsync` before the rename makes the bytes durable, not merely visible.
+    * `newline` is passed through because the csv module needs `newline=""`.
+    * The mode is what `open()` would have given: an existing file keeps its
+      own mode, a new one gets `0o666 & ~umask`. `NamedTemporaryFile`
+      creates at 0600 and `os.replace` keeps that, so without this every
+      output would be readable by its owner alone.
+    """
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline=newline, dir=directory,
+        prefix=os.path.basename(path) + ".", suffix=".tmp", delete=False)
+    try:
+        with handle:
+            yield handle
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            mode = os.stat(path).st_mode & 0o777
+        except OSError:
+            umask = os.umask(0)
+            os.umask(umask)
+            mode = 0o666 & ~umask
+        os.chmod(handle.name, mode)
+        os.replace(handle.name, path)
+    except BaseException:
+        # KeyboardInterrupt and SystemExit included: an interrupted run must
+        # not leave `out.json.ab12cd.tmp` beside the good file.
+        try:
+            os.unlink(handle.name)
+        except OSError:
+            pass
+        raise
+
+
+# A spreadsheet treats a cell beginning with one of these as a FORMULA.
+# Player, club and league names are site text, so a cell can begin with one.
+# The tab and the two newlines are here because some readers strip a leading
+# one and then execute whatever followed it.
+CSV_FORMULA_LEADS = ("=", "+", "-", "@", "\t", "\r", "\n")
+
+# Excel, Google Sheets and LibreOffice read a leading apostrophe as "the
+# rest of this cell is text". A consumer parsing the file with the `csv`
+# module does see it, which is why the count goes into the sidecar.
+CSV_FORMULA_ESCAPE = "'"
+
+
+def _csv_escape(v: Any):
+    """Neutralise a formula-shaped cell. Returns (value, was_escaped).
+
+    Only strings are touched: escaping a number would turn it into text and
+    break every sum over the column. CSV only: the JSON output keeps the
+    site's text exactly as served, and `csv_cells_escaped` in the sidecar
+    declares the difference between the two files.
+    """
+    if isinstance(v, str) and v.startswith(CSV_FORMULA_LEADS):
+        return CSV_FORMULA_ESCAPE + v, True
+    return v, False
+
+
 def _csv_value(v: Any) -> Any:
     if isinstance(v, (list, tuple)):
         return LIST_CSV_SEPARATOR.join(str(x) for x in v)
@@ -216,20 +290,32 @@ def _csv_value(v: Any) -> Any:
 
 
 def write_json(rows: Sequence[Any], path: str) -> None:
-    with open(path, "w", encoding="utf-8") as f:
+    with _atomic(path) as f:
         json.dump([asdict(r) for r in rows], f, ensure_ascii=False, indent=2)
 
 
-def write_csv(rows: Sequence[Any], path: str, row_cls: Type = Player) -> None:
-    # An empty result still gets the header row, from `row_cls` rather than
-    # the first row, so a mode that finds nothing still writes the columns
-    # that mode would have used.
+def write_csv(rows: Sequence[Any], path: str, row_cls: Type = Player) -> int:
+    """Write the CSV and return how many cells were formula-escaped.
+
+    An empty result still gets the header row, from `row_cls` rather than
+    the first row, so a mode that finds nothing still writes the columns
+    that mode would have used.
+    """
     fieldnames = [f.name for f in fields(row_cls)]
-    with open(path, "w", encoding="utf-8", newline="") as f:
+    escaped = 0
+    with _atomic(path, newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for r in rows:
-            writer.writerow({k: _csv_value(v) for k, v in asdict(r).items()})
+            row = {}
+            for k, v in asdict(r).items():
+                # After the list join: a joined list is text too, and its
+                # first element can be formula-shaped.
+                value, was_escaped = _csv_escape(_csv_value(v))
+                row[k] = value
+                escaped += was_escaped
+            writer.writerow(row)
+    return escaped
 
 
 # Exit code used when a run completes but produced nothing.
@@ -273,9 +359,9 @@ EXIT_FETCH_FAILED = 5
 # -- the Fingerprint API rejecting a request (bad key, bad --tags, rate
 # limit), or a Scraping Browser CDP connection failing (e.g. profile_locked)
 # -- as opposed to EXIT_BLOCKED (the TARGET SITE refusing a page) or an
-# uncaught crash (1). Per CLAUDE.md's family exit-code contract ("5" =
-# "remote API error"). Deliberately NOT what a captcha-solve failure gets:
-# per that same document's captcha section, a solver error is a WARNING that
+# uncaught crash (1). Exit 5 is "remote API error" in this project's exit-code
+# contract (see the README). Deliberately NOT what a captcha-solve failure
+# gets: a solver error is a WARNING that
 # lets the run continue (see captcha_solver.py and each engine's
 # handle_captcha_if_present) -- exit 5 is for calls the user explicitly
 # opted into (--fingerprint, --cdp-endpoint) where silently continuing
@@ -302,7 +388,7 @@ class RemoteAPIError(RuntimeError):
 def write_run_meta(out_prefix: str, meta: dict) -> str:
     """Write a run-metadata sidecar next to the output, return its path."""
     path = f"{out_prefix}.meta.json"
-    with open(path, "w", encoding="utf-8") as f:
+    with _atomic(path) as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
     print(f"[+] Wrote run metadata -> {path} (status={meta.get('status')})")
     return path
@@ -311,10 +397,14 @@ def write_run_meta(out_prefix: str, meta: dict) -> str:
 def run_meta(status: str, stop_reason: str, pages_requested: int,
              pages_completed: int, start_url: str, final_url: str,
              products: int, pages_failed: Optional[List[int]] = None,
-             mode: str = "market-values", source: str = SOURCE_DEFAULT) -> dict:
-    """Build the metadata dict for a finished run. See mediamarkt-scraper's
-    output_writer.py for the full rationale; unchanged here."""
-    return {
+             mode: str = "market-values", source: str = SOURCE_DEFAULT,
+             extra: Optional[dict] = None) -> dict:
+    """Build the metadata dict for a finished run.
+
+    `extra` adds keys (e.g. `csv_cells_escaped`) without overriding any of
+    the fixed ones below.
+    """
+    meta = {
         "source": source,
         "mode": mode,
         "status": status,
@@ -327,15 +417,19 @@ def run_meta(status: str, stop_reason: str, pages_requested: int,
         "final_url": final_url,
         "finished_at": datetime.now(timezone.utc).isoformat(),
     }
+    if extra:
+        meta.update({k: v for k, v in extra.items() if k not in meta})
+    return meta
 
 
 def save(rows: Sequence[Any], out_prefix: str, fmt: str,
-         allow_empty: bool = False, row_cls: Type = Player) -> int:
+         allow_empty: bool = False, row_cls: Type = Player,
+         stats: Optional[dict] = None) -> int:
     """Write JSON/CSV and return a process exit code.
 
-    On zero rows, nothing is written at all unless `allow_empty` — see the
-    family invariant in CLAUDE.md §8: a run that finds nothing must not
-    silently replace yesterday's good output with an empty file.
+    On zero rows, nothing is written at all unless `allow_empty`: a run
+    that finds nothing must not silently replace yesterday's good output
+    with an empty file.
     """
     if not rows and not allow_empty:
         print(f"[!] 0 rows — refusing to write {out_prefix}.json/.csv, so an "
@@ -347,14 +441,27 @@ def save(rows: Sequence[Any], out_prefix: str, fmt: str,
         write_json(rows, f"{out_prefix}.json")
         print(f"[+] Saved {len(rows)} row(s) -> {out_prefix}.json")
     if fmt in ("csv", "both"):
-        write_csv(rows, f"{out_prefix}.csv", row_cls=row_cls)
+        escaped = write_csv(rows, f"{out_prefix}.csv", row_cls=row_cls)
         print(f"[+] Saved {len(rows)} row(s) -> {out_prefix}.csv")
+        # Through `stats` rather than the return value, which is the exit
+        # code. finish_run puts it in the sidecar.
+        if stats is not None:
+            stats["csv_cells_escaped"] = escaped
+        if escaped:
+            print(f"[!] {escaped} CSV cell(s) began with a formula character "
+                  f"and were prefixed with {CSV_FORMULA_ESCAPE!r} so a "
+                  f"spreadsheet reads them as text. The JSON output is "
+                  f"unchanged; see csv_cells_escaped in the sidecar.")
     return 0 if rows else EXIT_NO_PRODUCTS
 
 
 # Stop reasons that mean the run saw everything there was to see.
+#
+# "not_found" is the site saying the club, player or URL asked for does not
+# exist (its own 404 page, or a profile redirected away): a complete answer
+# with no rows, so exit 4, not a failed fetch.
 COMPLETE_STOP_REASONS = ("completed", "pagination_exhausted", "no_new_products",
-                         "single_page_mode")
+                         "single_page_mode", "not_found")
 
 
 def finish_run(rows: Sequence[Any], out_prefix: str, fmt: str,
@@ -362,7 +469,8 @@ def finish_run(rows: Sequence[Any], out_prefix: str, fmt: str,
                pages_requested: int, pages_completed: int,
                start_url: str, final_url: str,
                pages_failed: Optional[List[int]] = None,
-               mode: str = "market-values", source: str = SOURCE_DEFAULT) -> int:
+               mode: str = "market-values", source: str = SOURCE_DEFAULT,
+               extra: Optional[dict] = None) -> int:
     """Write output + the run-metadata sidecar; return the exit code.
 
     Shared by all three browser engines so the status/exit-code mapping
@@ -384,17 +492,24 @@ def finish_run(rows: Sequence[Any], out_prefix: str, fmt: str,
     # names has a hole for every name nobody added to it.
     complete = stop_reason in COMPLETE_STOP_REASONS and not pages_failed
     row_cls = ROW_CLASS_BY_MODE.get(mode, Player)
-    rc = save(rows, out_prefix, fmt, allow_empty=allow_empty, row_cls=row_cls)
+    write_stats: dict = {}
+    rc = save(rows, out_prefix, fmt, allow_empty=allow_empty, row_cls=row_cls,
+              stats=write_stats)
     wrote_output = bool(rows) or allow_empty
 
     if wrote_output:
         status = "complete" if (rows and complete) else (
             "partial" if rows else "failed")
+        # Under the caller's `extra`, never over it: on a name collision what
+        # the engine measured about the site wins over housekeeping.
+        if write_stats:
+            extra = {**write_stats, **(extra or {})}
         write_run_meta(out_prefix, run_meta(
             status=status, stop_reason=stop_reason,
             pages_requested=pages_requested, pages_completed=pages_completed,
             pages_failed=pages_failed, mode=mode, source=source,
-            start_url=start_url, final_url=final_url, products=len(rows)))
+            start_url=start_url, final_url=final_url, products=len(rows),
+            extra=extra))
 
     if not rows:
         # Nothing gathered at all, and WHY decides the code. The three

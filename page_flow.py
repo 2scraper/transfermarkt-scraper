@@ -28,7 +28,7 @@ want a different response.
                looking for a proxy problem
 
 Three copies of that triage would drift, exactly as this family's other
-members found — see CLAUDE.md's own note on `page_flow.py` and on
+members found; the same reasoning keeps the exit-code mapping in
 `output_writer.finish_run()`.
 
 The gallery pagination trap — and correcting it
@@ -211,13 +211,13 @@ def wait_for_count(count: Callable[[str], int], sleep: Callable[[int], None],
 # change the exit code. A short final page is a correct answer (measured:
 # both paginated listings return exactly 25 rows per full page, so a last
 # page of a handful is expected, not a fault) -- what this catches is the
-# case CLAUDE.md's own family lessons warn about: a page beyond the site's
+# case this family has met before: a page beyond the site's
 # real depth, or a markup regression, coming back with only a few rows
 # instead of a clean "no new products" the sku-freshness check would have
 # caught outright. This repo deliberately does NOT add a numeric PAGE_CAP
 # (as catawiki-scraper does) on top of this: the sku-based "no new rows"
 # stop condition already terminates on DATA rather than a guessed page
-# count, which is the family's own stated preference (CLAUDE.md §7) -- a
+# count, which is the more trustworthy stop -- a
 # hardcoded cap here would be redundant insurance for a failure mode this
 # repo's fresher, sku-driven check already covers.
 THIN_PAGE_RATIO = 0.4
@@ -233,7 +233,7 @@ def is_thin_page(row_count: int, first_page_count: int) -> bool:
 # club-squad (only a free agent or a very old veteran prints "-"), so
 # coverage below this floor across a page is a parsing regression to flag,
 # not the site's own doing -- matching the family's own "DOM-confirmation
-# coverage... warning below 90%" convention (CLAUDE.md §4), loosened slightly
+# coverage... warning below 90%" convention, loosened slightly
 # here since there is no second source to reconcile against on this site (see
 # product_parser.py's docstring) and a genuinely elderly/reserve-heavy squad
 # page can legitimately run a little under 100%. Deliberately NOT applied to
@@ -262,14 +262,14 @@ def classify(html: Optional[str], *, status: Optional[int] = None,
 
     Keyword-only after `html` on purpose: `classify(html, status, url)` with
     `status` positional is the exact signature that crashed two of three
-    engines in a sibling repo on their first fetch (§17, check 1), because a
+    engines in a sibling repo on their first fetch, because a
     caller wrote `classify(html, url=...)` and bound `url` to `status`.
     """
     return detect_page_state(html or "", status=status, url=url, headers=headers)
 
 
 # What each state means for the run. Kept as data, not as three copies of an
-# if-chain, for the reason CLAUDE.md gives: an engine cannot then quietly
+# if-chain, so that an engine cannot quietly
 # disagree with its twins about whether a page is worth retrying or paying
 # for.
 # AWS WAF's CHALLENGE action (challenge.js, no widget) is a script a real
@@ -311,6 +311,12 @@ STATE_POLICY = {
     # NOT retried: an out-of-range page or an empty squad URL is a correct
     # answer to the question that was asked.
     "empty": {"retry": False, "solve": False, "blocked": False},
+    # The site's own "ERROR 404" page, or an HTTP 404/410: the address names
+    # nothing (a club id that does not exist, a mistyped --url). Not a
+    # refusal, so it is neither retried from another exit nor paid for, and
+    # all four engines reach the same answer whether or not they can see the
+    # status code.
+    "not_found": {"retry": False, "solve": False, "blocked": False},
 }
 
 
@@ -324,6 +330,90 @@ def should_solve(state: str) -> bool:
 
 def counts_as_blocked(state: str) -> bool:
     return STATE_POLICY.get(state, {}).get("blocked", False)
+
+
+# Stop reason for a run whose first page was the site's "not found" answer.
+# A complete answer (exit 4 with no rows): the site said the thing asked for
+# does not exist, which is a fact about the site, not a failed fetch.
+STOP_NOT_FOUND = "not_found"
+
+# Stop reason for a served page that holds rows the parser could not read: a
+# markup change, never an empty listing. Not complete, so exit 5 on page 1
+# (nothing obtained) and exit 6 on a later page (rows kept, run incomplete).
+STOP_PARSER_FOUND_NOTHING = "parser_found_nothing"
+
+
+def redirected_off_entity(mode: str, requested_url: str,
+                          final_url: Optional[str]) -> bool:
+    """Whether a single-entity page answered by sending us somewhere else.
+
+    Measured 2026-10-15: a player id that does not exist
+    (`/x/profil/spieler/999999999`) is answered with HTTP 200 and a redirect
+    to the market-values ranking, not a 404. Read as a player page it parses
+    to nothing and used to be reported as an empty result. A profile or squad
+    URL whose id is gone from the final URL is the site's not-found answer.
+    """
+    from product_parser import club_id_from_url, player_id_from_url
+    if not final_url:
+        return False
+    if mode == "player":
+        wanted = player_id_from_url(requested_url)
+        return bool(wanted) and player_id_from_url(final_url) != wanted
+    if mode == "club-squad":
+        wanted = club_id_from_url(requested_url)
+        return bool(wanted) and club_id_from_url(final_url) != wanted
+    return False
+
+
+def failure_reason(outcome) -> str:
+    """The stop reason a failed page outcome gives the run. One place, so the
+    four engines and their concurrent paths cannot name the same failure
+    differently."""
+    if getattr(outcome, "load_failed", False):
+        return "page_load_timeout"
+    if getattr(outcome, "parse_failed", False):
+        return STOP_PARSER_FOUND_NOTHING
+    if getattr(outcome, "state", None) == "not_found":
+        # Only reachable on a page after the first: page 1's "not found" is
+        # the run's answer (STOP_NOT_FOUND), a later page's is a page lost.
+        return "page_not_found"
+    return f"blocked_{outcome.blocked_by}"
+
+
+# At most one paid solve per page. A challenge that survives a solved token
+# is not one this run can pass, and a second solve is a second charge for the
+# same answer.
+SOLVES_PER_PAGE = 1
+
+
+class SolveBudget:
+    """The paid-solve allowance for ONE page, shared by every solve call site.
+
+    A page reaches the solver once per block-retry attempt, and with a proxy
+    pool each attempt is a fresh exit: before this, one page could buy
+    `--proxy-block-retries + 1` solves. One object per page, checked BEFORE
+    each purchase and never reset by a retry or a rotation, is what makes the
+    limit a limit. A fresh exit is a reason to fetch again, not a fresh
+    allowance.
+    """
+
+    def __init__(self, limit: Optional[int] = None):
+        self.limit = SOLVES_PER_PAGE if limit is None else limit
+        self.spent = 0
+
+    def allows(self) -> bool:
+        return self.spent < self.limit
+
+    def take(self) -> bool:
+        """Claim one solve. False when the allowance is spent. Counted
+        before the purchase, because a solver can charge for an answer and
+        still report failure."""
+        if not self.allows():
+            logger.info("This page's paid-solve allowance (%d) is spent; not "
+                        "buying another.", self.limit)
+            return False
+        self.spent += 1
+        return True
 
 
 def comparable(url: str) -> str:
@@ -446,3 +536,51 @@ def attempts(value) -> int:
             f"With 0 the load loop never runs, nothing is fetched, and the "
             f"engine reports the browser's blank page as a result.")
     return number
+
+
+def bounded(kind, minimum, flag: str):
+    """argparse `type=` for a numeric flag that has a floor.
+
+    A negative --delay reached `time.sleep` as a ValueError mid-run, a
+    negative --proxy-block-retries silently meant "never rotate", and
+    --pages 0 or --concurrency 0 asked for nothing. Each is refused at parse
+    time, as a usage error (exit 2) that names the flag, in every entry
+    point.
+    """
+    def check(value):
+        try:
+            number = kind(value)
+        except (TypeError, ValueError):
+            raise _argparse.ArgumentTypeError(
+                f"{flag} must be a{'n integer' if kind is int else ' number'}, "
+                f"not {value!r}")
+        if number < minimum:
+            raise _argparse.ArgumentTypeError(
+                f"{flag} must be at least {minimum}, not {value}")
+        return number
+    check.__name__ = kind.__name__  # argparse names the type in its errors
+    return check
+
+
+def env_url_conflict(env_url: str, mode: str, club_id=None, player_id=None,
+                     season=None) -> Optional[str]:
+    """Why a TRANSFERMARKT_URL from the environment or `.env` must not stand
+    in for the URL this run would build, or None when it may.
+
+    The loader fills only unset values, so after it runs a URL from `.env`
+    looks exactly like a typed --url. With the market-values URL the example
+    file used to ship, `--mode club-squad --club-id 27` silently scraped the
+    ranking and labelled it club 27's squad. A builder flag the user typed,
+    or a URL that addresses a different page kind than --mode, therefore
+    wins over the environment. A typed --url is never second-guessed here.
+    """
+    from product_parser import url_kind
+    typed = [flag for flag, value in (("--club-id", club_id),
+                                      ("--player-id", player_id),
+                                      ("--season", season)) if value]
+    if typed:
+        return f"{'/'.join(typed)} was given on the command line"
+    kind = url_kind(env_url)
+    if kind is not None and kind != mode:
+        return f"it addresses a {kind} page, and this run is --mode {mode}"
+    return None

@@ -18,20 +18,20 @@ name: canary
 # network positions drew none at all. Whether a GitHub runner meets the WAF
 # is a property of that runner's address on that morning.
 #
-# So the rule here is NOT "this needs no secret". It is:
+# So the rule here is:
 #
 #   * If TRANSFERMARKT_CDP_ENDPOINT or TRANSFERMARKT_PROXY is configured,
-#     the run goes through it — that is the repo's documented default path —
-#     and being blocked anyway is a REAL failure worth a red check.
+#     the run goes through it.
 #   * If neither is configured, the run uses a bare runner and a local
-#     Playwright browser, which is what catches a markup change, and that is
-#     the common case. But a block from a bare runner is a fact about the
-#     runner's address, not about the site, so it SKIPS with a ::notice::
-#     rather than failing. A check that goes red for a reason nobody in this
-#     repo can fix is a check everyone learns to ignore.
+#     Playwright browser. That path has worked from GitHub runners every day
+#     it was looked at (2026-10-06 to 2026-10-15: 75 rows over 3 pages, the
+#     AWS WAF challenge action clearing by itself in about a second), so it
+#     needs no secret.
 #
-# Every other exit code is still interpreted and still turns this red, so a
-# markup change cannot hide behind the skip.
+# Either way, a run that is blocked (exit 3), finds nothing (exit 4), never
+# obtains the page (exit 5) or stops part-way (exit 6) turns this RED. An
+# earlier version let a block from a bare runner end green with a notice;
+# a canary that can pass without reaching the site does not test the site.
 #
 # Secrets reach the scraper through the ENVIRONMENT, never a command line —
 # `ps` reads argv. env_config.py reads exactly these variable names, and an
@@ -73,7 +73,7 @@ jobs:
           elif [ "$HAVE_PROXY" = "true" ]; then
             echo "::notice::Running through TRANSFERMARKT_PROXY. A block here is a real failure."
           else
-            echo "::notice::Running from a bare runner with a local Playwright browser and no secret. This catches a markup change; if the runner's address meets the WAF, this job SKIPS rather than failing."
+            echo "::notice::Running from a bare runner with a local Playwright browser and no secret. A block, an empty result or a partial run turns this red."
           fi
 
       - name: Scrape a real, known-good market-values page
@@ -108,35 +108,18 @@ jobs:
           CODE: ${{ steps.run.outputs.exit_code }}
         run: |
           code="$CODE"
-          skipped=false
           case "$code" in
             0)   echo "OK — rows parsed from a live run." ;;
-            3)   if [ "$HAVE_CDP" = "true" ] || [ "$HAVE_PROXY" = "true" ]; then
-                   echo "::error::Blocked before parsing (exit 3) while running through a configured exit (cdp=$HAVE_CDP proxy=$HAVE_PROXY). That is the documented default path failing, not the runner's address. Check the zone or proxy credentials first — a Scraping Browser zone that refuses CONNECT by host reports ERR_TUNNEL_CONNECTION_FAILED and is an account matter, not a scraper bug — then see detect_bot_challenge()/BOT_CHALLENGE_MARKERS in product_parser.py."
-                 else
-                   # No secret configured, so this ran from a bare runner. A
-                   # block here is a fact about that runner's address on the
-                   # day: 8 of 10 requests from one datacentre address were
-                   # challenged on 2026-09-16, and none at all from six other
-                   # network positions later the same day. Nothing in this
-                   # repo can fix it, so it must not paint the check red.
-                   echo "::notice::SKIPPED: this runner's address was challenged before the page was parsed (exit 3), and no TRANSFERMARKT_CDP_ENDPOINT or TRANSFERMARKT_PROXY secret is configured to route around it. That is a property of the runner's address, not of the site or of this scraper, so the canary is skipping rather than failing. Set either secret to have this run go through an exit that is not challenged -- and to make a block here a real failure."
-                   skipped=true
-                   code=0
-                 fi ;;
+            3)   echo "::error::Blocked before parsing (exit 3) (cdp=$HAVE_CDP proxy=$HAVE_PROXY). From a bare runner this means the runner's address met an AWS WAF captcha that did not clear by itself; through a configured exit it means that exit was refused. The page snapshot and debug dump in the artifacts show which challenge it was. Configuring TRANSFERMARKT_CDP_ENDPOINT or TRANSFERMARKT_PROXY routes the run through another exit." ;;
             4)   echo "::error::Ran fine but parsed 0 rows (exit 4) on a page known to have thousands of rankings. The site's markup has probably changed. The HTML dump in the artifacts tells you what the parser actually saw." ;;
-            5)   echo "::error::Remote API error (exit 5) — a 2captcha product path failed. With a secret configured (cdp=$HAVE_CDP proxy=$HAVE_PROXY) that is the endpoint or the credentials; with neither, nothing should have called a remote API at all and the run log in the artifacts is where to start." ;;
+            5)   echo "::error::Nothing obtained (exit 5): either the page was never fetched or parsed (a load timeout, a dead exit, or a served page whose rows the parser could not read: stop_reason parser_found_nothing), or a 2Captcha product call failed (cdp=$HAVE_CDP proxy=$HAVE_PROXY). The run log and canary_run_page*_debug.html in the artifacts say which." ;;
             6)   echo "::error::Partial run (exit 6) — some pages were gathered and then the run stopped early. canary_run.meta.json names which pages failed; for --mode market-values this is the known rare case where the pagination link needs the fallback chain and runs out of it (see product_parser.py's docstring on the gallery pagination trap)." ;;
             2)   echo "::error::Bad usage (exit 2) — the workflow's own arguments are wrong, not the site." ;;
             *)   echo "::error::Unexpected exit code $code (see the step above for the traceback)." ;;
           esac
-          echo "skipped=$skipped" >> "$GITHUB_OUTPUT"
           test "$code" = "0"
 
       - name: Sanity-check the scraped data
-        # Nothing was fetched on the skip path, so there is nothing to check
-        # and canary_run.json does not exist.
-        if: steps.verdict.outputs.skipped != 'true'
         # Exit 0 only means "some rows were written". It says nothing about
         # whether the page actually rendered: a snapshot taken too early still
         # writes rows, just with fields empty. Every floor below is set from a
@@ -191,8 +174,8 @@ jobs:
                   fail.append(f"{field} present on only {got}/{len(rows)} rows "
                               f"(floor {floor:.0%})")
 
-          # Inspired by this family's tokopedia-scraper lesson (CLAUDE.md
-          # §18): a page number never threaded into the parser produces
+          # Inspired by this family's tokopedia-scraper lesson: a page
+          # number never threaded into the parser produces
           # (page, row_index) collisions across pages that look, from the row
           # count alone, like a perfectly healthy run. Assert the pairs are
           # actually unique rather than trusting that they are.

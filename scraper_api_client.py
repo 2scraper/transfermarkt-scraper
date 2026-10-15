@@ -10,8 +10,8 @@ API** (https://scraper.2captcha.com — a different product from the Scraping
 Browser API the other three reach through --cdp-endpoint), gets HTML back over
 plain HTTPS, and feeds it to this project's product_parser.
 
-Ported from this family's mediamarkt-scraper (site knowledge here is ~none —
-see CLAUDE.md's own module table), not written on spec: v0.1 shipped without
+Ported from this family's mediamarkt-scraper (it carries no site
+knowledge of its own), not written on spec: v0.1 shipped without
 it on the reasoning that porting a fourth engine on spec, with no measured
 page needing it, would be dead code. That reasoning does not hold for this
 site specifically — see below — which is why this file exists now.
@@ -132,6 +132,7 @@ from bs4 import BeautifulSoup
 from product_parser import (parse_market_values, parse_club_squad,
                             parse_transfers, parse_player_detail,
                             detect_bot_challenge, detect_page_state, page_url,
+                            page_states_rows, canonical_url,
                             site_host, is_supported_host, unsupported_reason,
                             HOSTS, player_url, club_squad_url,
                             MARKET_VALUES_URL, TRANSFERS_URL)
@@ -151,7 +152,7 @@ MAX_API_TIMEOUT = 120
 PAGINATED_MODES = ("market-values", "transfers")
 
 
-# Global on purpose, not a single find/partition -- see CLAUDE.md §8: "A
+# Global on purpose, not a single find/partition: "A
 # masker that handles the first occurrence prints the password the other
 # four times and looks like it is working." Same pattern the three browser
 # engines use in their own _mask_credentials.
@@ -309,7 +310,12 @@ def _parse_for_mode(html: str, url: str, args, page_num: int) -> List:
 
 
 def _fetch_one_page(args, page_num: int, url: str):
-    """(rows, blocked_by, upstream_status, html) for one page. Never raises
+    """(rows, blocked_by, upstream_status, html, failure) for one page.
+
+    `failure` is None, "not_found" (the site's own 404 page, or a profile
+    or squad URL answered with an unrelated page) or
+    page_flow.STOP_PARSER_FOUND_NOTHING (the page shows rows and the parser
+    read none). Never raises
     for an EXPECTED failure (a bad status, a challenge page); those come
     back as blocked_by set. A Scraper API call failure IS allowed to raise
     -- caught once in main() and mapped to EXIT_REMOTE_API_ERROR. `html` is
@@ -354,9 +360,15 @@ def _fetch_one_page(args, page_num: int, url: str):
                         "HTTP %s, %d bytes) -- saved to %s. This is exit 3, "
                         "distinct from a genuinely empty result (exit 4).",
                         upstream_status, len(html), debug_html)
-            return [], "blocked", upstream_status, html
+            return [], "blocked", upstream_status, html, None
 
+        if state == "not_found":
+            break
         vendor = detect_bot_challenge(html, url=url) if state != "content" else None
+        if not vendor and page_flow.counts_as_blocked(state):
+            # Classified as a challenge (e.g. by its response header) with no
+            # vendor marker in the body: still not a page to parse.
+            vendor = state
         if vendor:
             if attempt < attempts:
                 logger.info("%s challenge page on attempt %d/%d -- retrying "
@@ -368,8 +380,18 @@ def _fetch_one_page(args, page_num: int, url: str):
                 f.write(html)
             logger.error("Blocked by %s before parsing (%d bytes) -- saved "
                         "to %s.", vendor, len(html), debug_html)
-            return [], vendor, upstream_status, html
+            return [], vendor, upstream_status, html, None
         break
+
+    # This API returns the body, not where a redirect ended, so the page's
+    # own canonical link stands in for the final URL.
+    if state == "content" and page_flow.redirected_off_entity(
+            args.mode, url, canonical_url(html)):
+        state = "not_found"
+    if state == "not_found":
+        logger.error("Page %d: the site says %s does not exist. Check "
+                     "--club-id / --player-id / --url.", page_num, url)
+        return [], None, upstream_status, html, "not_found"
 
     rows = _parse_for_mode(html, url, args, page_num)
     logger.info("Parsed %d row(s) from page %d.", len(rows), page_num)
@@ -395,7 +417,12 @@ def _fetch_one_page(args, page_num: int, url: str):
             f.write(html)
         logger.warning("0 rows parsed -- saved what the API returned to %s.", debug_html)
 
-    return rows, None, upstream_status, html
+    failure = None
+    if not rows and state == "content" and page_states_rows(html, args.mode):
+        logger.error("Page %d shows rows but the parser read none -- a "
+                     "parser failure, not an empty result.", page_num)
+        failure = page_flow.STOP_PARSER_FOUND_NOTHING
+    return rows, None, upstream_status, html, failure
 
 
 def scrape(args) -> int:
@@ -407,10 +434,16 @@ def scrape(args) -> int:
     pages_failed: List[int] = []
     final_url = args.url
 
-    rows, blocked_by, _status, page1_html = _fetch_one_page(args, 1, args.url)
+    rows, blocked_by, _status, page1_html, failure = _fetch_one_page(args, 1, args.url)
     if blocked_by is not None:
         stop_reason = f"blocked_{blocked_by}"
         blocked = True
+        pages_failed.append(1)
+    elif failure == "not_found":
+        stop_reason = page_flow.STOP_NOT_FOUND
+        pages_completed = 1
+    elif failure:
+        stop_reason = failure
         pages_failed.append(1)
     else:
         pages_completed = 1
@@ -452,10 +485,15 @@ def scrape(args) -> int:
         elif args.pages > 1:
             for page_num in range(2, args.pages + 1):
                 url = page_url(args.url, page_num)
-                page_rows, page_blocked_by, _status, _html = _fetch_one_page(args, page_num, url)
+                page_rows, page_blocked_by, _status, _html, failure = _fetch_one_page(args, page_num, url)
                 if page_blocked_by is not None:
                     stop_reason = f"blocked_{page_blocked_by}"
                     blocked = True
+                    pages_failed.append(page_num)
+                    break
+                if failure:
+                    stop_reason = ("page_not_found" if failure == "not_found"
+                                   else failure)
                     pages_failed.append(page_num)
                     break
                 pages_completed += 1
@@ -534,20 +572,22 @@ def parse_args():
                         "which is the safer way to pass it.")
     p.add_argument("--url", default=None,
                    help="Override the URL this mode would otherwise build. "
-                        "Falls back to $TRANSFERMARKT_URL, then to the "
-                        "mode's own canonical URL.")
+                        "Falls back to $TRANSFERMARKT_URL (only when no "
+                        "--club-id/--player-id/--season was typed and it "
+                        "addresses the same page kind as --mode), then to "
+                        "the mode's own canonical URL.")
     p.add_argument("--club-id", default=None, help="Club id for --mode club-squad.")
     p.add_argument("--season", default=None, help="Season start year for --mode club-squad.")
     p.add_argument("--player-id", default=None, help="Player id for --mode player.")
-    p.add_argument("--pages", type=int, default=1,
+    p.add_argument("--pages", type=page_flow.bounded(int, 1, "--pages"), default=1,
                    help="Listing pages to crawl. Checked per run against "
                         "page 1's own next-link (page_flow.pagination_is_"
                         "addressable) -- usually works for market-values "
                         "too, not just transfers; see the module docstring.")
-    p.add_argument("--delay", type=float, default=1.0, help="Delay between pages, seconds")
+    p.add_argument("--delay", type=page_flow.bounded(float, 0, "--delay"), default=1.0, help="Delay between pages, seconds")
     p.add_argument("--format", choices=["json", "csv", "both"], default="both")
     p.add_argument("--out", default="transfermarkt_products_scraperapi", help="Output file prefix")
-    p.add_argument("--timeout", type=int, default=60,
+    p.add_argument("--timeout", type=page_flow.bounded(int, 1, "--timeout"), default=60,
                    help=f"API-side task timeout in seconds (1-{MAX_API_TIMEOUT}, default 60)")
     p.add_argument("--cdp-url", default=None,
                    help="Route the fetch through an existing browser session over CDP "
@@ -563,13 +603,16 @@ def parse_args():
                       help="Wait for a page load state instead of specific content")
     p.add_argument("--allow-empty", action="store_true",
                    help="Write output files even when 0 rows were found.")
-    p.add_argument("--retries", type=int, default=1,
+    p.add_argument("--retries", type=page_flow.bounded(int, 0, "--retries"), default=1,
                    help="Extra attempts if a bot-challenge page comes back. Each attempt "
                         "is a separate billable task, so this defaults to 1.")
-    p.add_argument("--retry-delay", type=int, default=10, help="Seconds between retries")
+    p.add_argument("--retry-delay", type=page_flow.bounded(int, 0, "--retry-delay"), default=10, help="Seconds between retries")
     p.add_argument("--dump-html", default=None,
                    help="Save the exact HTML the parser is given (always, even on success)")
     args = p.parse_args()
+    # Captured BEFORE the environment is applied: afterwards a URL from
+    # `.env` is indistinguishable from one the user typed.
+    typed_url = args.url
     # This client uses --key rather than --twocaptcha-key, so the env
     # mapping is spelled out instead of defaulted -- same pattern this
     # family's mediamarkt-scraper uses for its own scraper_api_client.py.
@@ -578,6 +621,15 @@ def parse_args():
         "TRANSFERMARKT_CDP_ENDPOINT": "cdp_url",
         "TRANSFERMARKT_URL": "url",
     })
+
+    if not typed_url and args.url:
+        why = page_flow.env_url_conflict(args.url, args.mode, args.club_id,
+                                         args.player_id, args.season)
+        if why:
+            logger.warning("Not using TRANSFERMARKT_URL from the environment: "
+                           "%s. Building the --mode %s URL instead.", why,
+                           args.mode)
+            args.url = None
 
     if not args.key:
         p.error("no --key given, and TWOCAPTCHA_KEY is not set in the environment or in .env.")

@@ -84,53 +84,10 @@ jobs:
 
       - name: Committed sample output is real
         # The README links to these two files, so a push without them ships
-        # broken links. And a sample invented by hand drifts from the schema
-        # and teaches readers the wrong field names, so these are cut from a
-        # real run rather than written by hand. This is a Player-mode sample
-        # (--mode market-values) — output_writer.py has both Player and
-        # Transfer dataclasses; this check follows whichever one the sample
-        # actually is.
-        run: |
-          python - <<'EOF'
-          import csv, json, sys
-          from pathlib import Path
-
-          MARKERS = ("sample-product-", "example brand", "sample product",
-                     "product description text", "lorem ipsum")
-
-          fail = []
-          for name in ("sample_output.json", "sample_output.csv"):
-              if not Path(name).is_file():
-                  fail.append(f"{name} is missing — regenerate it from a real run")
-
-          if not fail:
-              rows = json.loads(Path("sample_output.json").read_text())
-              if not rows:
-                  fail.append("sample_output.json is empty")
-              blob = json.dumps(rows).lower()
-              hit = [m for m in MARKERS if m in blob]
-              if hit:
-                  fail.append(f"sample_output.json looks fabricated: {hit}")
-
-              # Column set must match what the writers actually produce.
-              from output_writer import Player, Transfer
-              from dataclasses import asdict
-              row_cls = Transfer if "from_club" in rows[0] else Player
-              expected = list(asdict(row_cls()).keys())
-              for i, row in enumerate(rows):
-                  if list(row.keys()) != expected:
-                      fail.append(f"row {i} columns drifted from output_writer.{row_cls.__name__}")
-                      break
-
-              with open("sample_output.csv", newline="", encoding="utf-8") as f:
-                  header = next(csv.reader(f))
-              if header != expected:
-                  fail.append(f"sample_output.csv header drifted from output_writer.{row_cls.__name__}")
-
-          for line in fail:
-              print("FAILED:", line)
-          sys.exit(1 if fail else 0)
-          EOF
+        # broken links, and a sample invented by hand drifts from the schema.
+        # Runs the shipped check rather than an inline copy of it, so the two
+        # cannot disagree.
+        run: python3 .github/ci_checks.py --sample-check
 
       - name: Config reporter runs with no .env present
         run: python env_config.py

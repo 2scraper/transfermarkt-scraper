@@ -247,6 +247,12 @@ is readable by anything that can run `ps` and lands in your shell history.
 Copy `.env.example` to `.env` and run `python3 env_config.py` to see what
 was picked up (it prints no secrets).
 
+`TRANSFERMARKT_URL` is optional and ships commented out. When set, it
+stands in for `--url` only if you typed no `--url`, no `--club-id` /
+`--player-id` / `--season`, and it addresses the same kind of page as
+`--mode`; otherwise the run builds the `--mode` URL and logs that it
+ignored the variable.
+
 ---
 
 ## The gallery pagination trap (market-values) — rare, not the default
@@ -353,9 +359,11 @@ different text, normalised into a single English vocabulary:
 | `www.transfermarkt.co.kr` | Korean | `220.00 mil. €` | Translated (7 positions, 8 nationalities measured) |
 | `www.transfermarkt.jp` | Japanese | `220.00 m €` | Positions translated; nationality text is already English on this locale (a real site asymmetry, not a gap) |
 
-There is no separate `--locale`/`--country` flag — same convention as this
-family's `mediamarkt-scraper`. The locale is read from whichever host you
-pass in `--url`:
+There is no `--country` flag, and the site's language is not chosen by a
+flag either — same convention as this family's `mediamarkt-scraper`. The
+locale is read from whichever host you pass in `--url`. (Playwright's
+`--locale` sets only the browser's own locale, default `en-US`; it does not
+change which site or language you get.)
 
 ```bash
 # German market-values ranking -- same rows as the English one, translated
@@ -419,7 +427,7 @@ What gets normalised, and how:
 
 ## What the 2Captcha products are for here
 
-> **Corrected in v0.4.1.** Up to v0.4.0 this section said a single clean
+> **Corrected on 2026-09-16.** Before that, this section said a single clean
 > fetch of each page kind meant none of these products was needed here.
 > That was one measurement from one network position, written up as a fact
 > about the site. Transfermarkt sits behind **AWS WAF on CloudFront**, and
@@ -440,13 +448,20 @@ The order below is the order to reach for them in.
 
 | Product | What it is for |
 |---|---|
-| **Scraping Browser API** (`--cdp-endpoint`) — *the default path* | A browser you neither run nor patch, carrying its own exit and a persistent profile, so it answers the address question and the browser question at once. Its auto-solve extension ships an AWS WAF interceptor, so it may clear a challenge before the local solver is offered one (`Captcha.setAutoSolve`; enabling it is confirmed on this site, clearing a challenge is not — no challenge has been met to clear). |
-| **Captcha solving** (`--twocaptcha-key`) — *the fallback* | 2Captcha's API solves the AWS WAF captcha this site serves, via task type `AmazonTaskProxyless` — all four parameters it needs are published in the challenge page's own `window.gokuProps`, and the task schema is verified against the API with a control. Implemented in `captcha_solver.detect_aws_waf`; **this repo has not yet run it against a live challenge**, because no challenge has been met since the code path was written. `BOT_CHALLENGE_MARKERS` also covers Cloudflare, DataDome, PerimeterX/HUMAN, reCAPTCHA and hCaptcha. |
+| **Scraping Browser API** (`--cdp-endpoint`) — *the default path* | A browser you neither run nor patch, carrying its own exit and a persistent profile, so it answers the address question and the browser question at once. Its auto-solve extension clears this site's AWS WAF captcha before the local solver is offered one (`Captcha.setAutoSolve`). Measured 2026-09-17 with a control: 5 of 5 captchas met were cleared by the auto-solve (30–63 s each, 25 rows, `status=complete`), while the same endpoint with `--no-autosolve` stayed blocked through 8 of 8 reloads. |
+| **Captcha solving** (`--twocaptcha-key`) — *the fallback* | 2Captcha's API takes the AWS WAF captcha this site serves; all four parameters it needs are published in the challenge page's own `window.gokuProps` (`captcha_solver.detect_aws_waf`). With a run exit it is sent as `AmazonTask` carrying that exit, otherwise as `AmazonTaskProxyless`. Run against a live captcha on 2026-09-17: the proxyless type returned a token that did not clear the page, and `AmazonTask` with the page's own exit returned a voucher in about 20–25 s. That the site then served the page on a solver-API token has not been recorded. At most one solve is bought per page, however many exits a blocked page is retried from. `BOT_CHALLENGE_MARKERS` also covers Cloudflare, DataDome, PerimeterX/HUMAN, reCAPTCHA and hCaptcha. |
 | **Proxies** (`--proxy-file`) | An exit that is not your own, without a remote browser — worth reaching for when you already run Chromium somewhere and only the address is the problem, or when you want volume spread over many exits. Measured 2026-09-16: the real page returned from a 2Captcha proxy exit with no solve needed. |
 | **Fingerprints** (`--fingerprint`) | A consistent device identity across runs. |
 
 If you already have proxies from somewhere else, `--proxy-file` takes any
 list.
+
+**None of these was needed from a GitHub runner on the days measured.** The
+daily canary runs the Playwright engine from a bare runner with no key, no
+proxy and no endpoint; from 2026-10-06 to 2026-10-15 every run read 75 rows
+over 3 market-values pages, the AWS WAF *challenge* action clearing by
+itself in about a second. That is a fact about those runners' addresses on
+those days, not a promise about yours: run the probe.
 
 ---
 
@@ -567,14 +582,32 @@ push for the same four reasons.
 | `1` | Crash |
 | `2` | Bad usage (including a URL that is not a supported Transfermarkt host) |
 | `3` | Blocked — a bot-check/challenge page |
-| `4` | Zero rows |
-| `5` | Remote API error — the Fingerprint API or a `--cdp-endpoint` connection failed on its own terms (bad key, rate limit, a Scraping Browser profile already in use). Distinct from `3`: this is a 2Captcha product call failing, not Transfermarkt refusing a page. A captcha-SOLVE failure is deliberately NOT this — it's a warning and the run continues, reporting `3` only if the page really was blocked. |
-| `6` | Partial — some pages fetched, then stopped early. Not necessarily a fault: for `--mode market-values`, this is the expected result on the rare run whose pagination link needs the fallback chain (see "the gallery pagination trap") and runs out of it; on the common run it does not happen at all. |
+| `4` | Zero rows, and the site's answer really was nothing: an empty squad, or the club, player or URL asked for does not exist (the site's own 404 page, or a profile id answered with a redirect elsewhere; `stop_reason: not_found`) |
+| `5` | Nothing obtained. Either the content was never fetched or read — a load timeout, a dead exit, or a served page that shows rows the parser could not read (`stop_reason: parser_found_nothing`, a markup change) — or a 2Captcha product call failed on its own terms (the Fingerprint API, or a `--cdp-endpoint` connection: bad key, rate limit, a Scraping Browser profile already in use). Distinct from `3` and `4`: nothing can be concluded about the site from it. A captcha-SOLVE failure is deliberately NOT this — it's a warning and the run continues, reporting `3` only if the page really was blocked. |
+| `6` | Partial — some pages fetched, then stopped early (including a later page that was refused, answered 404, or parsed to nothing while showing rows). Not necessarily a fault: for `--mode market-values`, this is the expected result on the rare run whose pagination link needs the fallback chain (see "the gallery pagination trap") and runs out of it; on the common run it does not happen at all. |
 
 **A run that finds nothing writes nothing.** Last known good output is not
 replaced with `[]`; `--allow-empty` is the opt-out. `<out>.meta.json`
 records `status`, `stop_reason`, `mode`, `source` and **which** pages
 failed by number.
+
+**Files are replaced, never truncated.** Each output is written to a
+temporary file beside it and renamed over the old one, so a crash or a full
+disk mid-write leaves the previous file intact. A new file gets the mode a
+plain `open()` would give it (`0666` minus your umask); an existing file
+keeps its own mode.
+
+**CSV cells that would run as a formula are neutralised.** A text cell
+beginning with `=`, `+`, `-`, `@`, a tab or a line break gets a leading `'`
+in the CSV, so a spreadsheet shows it as text. Numbers are untouched, the
+JSON keeps the site's text exactly, and `csv_cells_escaped` in the sidecar
+says how many cells differ between the two.
+
+**Numeric flags are checked.** `--pages`, `--concurrency` and
+`--proxy-sessions` must be at least 1; `--delay`, `--retry-delay` and
+`--proxy-block-retries` at least 0 (`scraper_api_client.py`: `--retries`
+and `--retry-delay` at least 0, `--timeout` at least 1). A value below the
+floor is a usage error (exit 2) naming the flag.
 
 ---
 

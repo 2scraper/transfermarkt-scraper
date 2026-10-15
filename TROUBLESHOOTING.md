@@ -8,17 +8,14 @@ Check `--dump-html PATH` first — it writes the exact bytes the parser was
 given, whether the run succeeded or not, so you can see what actually
 arrived instead of guessing.
 
-Whether transfermarkt.com treats a datacentre or VPN address differently
-from a residential one is **genuinely unmeasured for v0.1** — see README's
-"Known limitations". This repo's own build environment could not complete a
-live browser connection to the site at all to check (the failure traced back
-to the *build sandbox's own* egress allowlist, not the site), and a single
-**proxied** fetch of each page kind this repo covers came back clean with no
-challenge markers. So a red exit 3 from a plain CI runner or a VPS is itself
-useful information, not a known-and-expected outcome the way it is for this
-family's e-commerce members. Try again with `--proxy` set to a residential
-exit; if that clears it, please report back (an issue, or a note in a PR) —
-that measurement belongs in the README for the next person.
+Transfermarkt sits behind AWS WAF, and whether it challenges you is a
+property of your address on the day. Its *challenge* action (HTTP 202, no
+widget) clears by itself in a real browser in about a second, and every
+engine waits for that. Its *captcha* action (HTTP 405, a widget) does not.
+Run `bash tools/waf_probe.sh 10 market-values` from the machine in question,
+and see README "What the 2Captcha products are for here" for what each
+product changes. A daily canary from a bare GitHub runner read the site
+without any of them on every day from 2026-10-06 to 2026-10-15.
 
 If a proxy does not help, check `detect_bot_challenge`'s markers
 (`product_parser.BOT_CHALLENGE_MARKERS`) against the dumped HTML — they
@@ -29,9 +26,18 @@ bucket via a non-2xx status).
 
 ## Exit 4 (zero rows) on a URL that plainly has data in a browser
 
+Check `stop_reason` in the `.meta.json` sidecar (written with
+`--allow-empty`) or the log first:
+
+**`not_found`** — the site says the thing asked for does not exist. A club
+id that does not exist gets the site's own "ERROR 404" page (HTTP 404); a
+player id that does not exist is redirected to the market-values ranking
+(HTTP 200), which the engines recognise because the id is gone from the
+final URL. Check `--club-id` / `--player-id` / `--url`.
+
 **`--mode club-squad`** — check the club id and `--season`. A season with no
-squad data yet, or a wrong id, answers 200 with a page that has no table on
-it, which is a correct "empty" answer, not a bug.
+squad data yet answers 200 with a page that has no player rows on it, which
+is a correct "empty" answer, not a bug.
 
 **`--mode market-values` / `--mode transfers`** past page 1 — you may be one
 page past the end of the ranking/listing. Both modes stop and report a
@@ -39,10 +45,14 @@ page past the end of the ranking/listing. Both modes stop and report a
 *complete* answer, not a truncated one — check `stop_reason` in the
 `.meta.json` sidecar.
 
-**`--mode player`** — the header selector
-(`header.data-header[itemtype="https://schema.org/Person"]`) did not match.
-Either the player id is wrong, or the profile page's header markup has
-moved; `--dump-html` tells you which.
+## Exit 5 with `stop_reason: parser_found_nothing`
+
+The page arrived and shows rows (a ranking or squad table linking to player
+profiles, or a profile header), and the parser read none of them. That is a
+markup change on the site, not an empty listing, so it is never reported as
+exit 4. On a later page of a paginated run the same thing is exit 6 with the
+rows gathered so far kept. `--dump-html PATH` saves exactly what the parser
+was given.
 
 ## The row count is right but a column is empty
 

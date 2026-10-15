@@ -79,7 +79,19 @@ secrets*
 # recoverable only because that repo was private at the time. On 2026-09-17
 # a sibling had an untracked `.env.bak` holding a 32-hex key in a PUBLIC
 # repository, one `git add -A` from publication. Craigslist was fixed then
-# and the fix never reached anyone else, which is §16's rule unapplied: when
-# you fix one, check the siblings.
+# and the fix never reached anyone else. When you fix one, check the
+# siblings.
 .env*
 !.env.example
+
+# Captures. A `--dump-html` file, its `.pageN` siblings and scratch
+# directories of saved pages hold whatever the site served, session cookies
+# and tracking ids included. Ignored by KIND rather than by the names one
+# person happened to use; `index.html` (the landing page) is the one HTML
+# file this repo commits on purpose.
+/*.html
+!/index.html
+*.page[0-9]*
+live/
+out/
+captures/

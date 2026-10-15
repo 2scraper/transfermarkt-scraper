@@ -67,6 +67,7 @@ from diff_runs import diff_rows, _check_comparable, TRACKED_FIELDS
 from output_writer import (Player, Transfer, ROW_CLASS_BY_MODE,
                            UNIQUE_BY_SKU_MODES, dedupe_by_key, dedupe_by_sku,
                            write_json, write_csv, save, finish_run, run_meta,
+                           write_run_meta,
                            LIST_CSV_SEPARATOR, EXIT_BLOCKED, EXIT_NO_PRODUCTS,
                            EXIT_PARTIAL, EXIT_REMOTE_API_ERROR, RemoteAPIError,
                            COMPLETE_STOP_REASONS, SOURCE_DEFAULT)
@@ -119,7 +120,7 @@ def _raises(fn):
 # 2026-09-10 (market-values ranking page 1, Manchester City's squad page,
 # the latest-transfers listing, and Erling Haaland's profile). Trimmed to a
 # handful of rows each — full pages ran 120-380KB and this suite needs the
-# STRUCTURE, not every row — and scrubbed per CLAUDE.md §10 (see
+# STRUCTURE, not every row — and scrubbed of session data (see
 # test_no_capture_leaks): no session id, token or email was found in any of
 # these pages to begin with (this site carries no such per-visitor state in
 # its HTML, unlike a review page on an e-commerce sibling), but the same
@@ -1367,7 +1368,7 @@ def test_aws_waf():
     ok = True
     import captcha_solver as cs
 
-    # --- §18's control: every marker must be ABSENT from real pages -------
+    # --- control: every marker must be ABSENT from real pages ------------
     # A marker that fires on a good page is worse than no marker at all.
     good_pages = {
         "market-values": FIX_MARKET_VALUES,
@@ -1407,7 +1408,7 @@ def test_aws_waf():
     ok &= check("and the policy for that state actually solves",
                 page_flow.should_solve("captcha") and not page_flow.should_solve("blocked"))
 
-    # --- §17's classification-order trap ---------------------------------
+    # --- the classification-order trap ----------------------------------
     served_with_hunter = (
         '<html><head><script src="chrome-extension://kjmk/content/captcha/'
         'amazon_waf/interceptor.js"></script></head><body>'
@@ -2266,13 +2267,26 @@ def test_engine_parity(skips):
             skips.append("%s AWS WAF parity (%s)" % (modname, e))
             return None
         saved_solve, saved_sleep = mod.solve_recaptcha, mod.time.sleep
-        mod.solve_recaptcha = lambda *a, **k: TOKEN
+        purchases = []
+        mod.solve_recaptcha = lambda *a, **k: purchases.append(1) or TOKEN
         mod.time.sleep = lambda *_: None
         try:
             session, target = build()
+            budget = page_flow.SolveBudget()
             solved = mod.handle_captcha_if_present(
-                session, FakeArgs(), "table.items tbody tr")
-            return solved, read(target)
+                session, FakeArgs(), "table.items tbody tr", budget=budget)
+            first_read = read(target)
+            # The same page met again (a retry from another exit) with the
+            # SAME allowance: the challenge is still there, the solver is not
+            # called a second time.
+            session2, _ = build()
+            again = mod.handle_captcha_if_present(
+                session2, FakeArgs(), "table.items tbody tr", budget=budget)
+            ok_budget = check("%s buys at most one solve per page: a second "
+                              "challenge on the same page is not paid for "
+                              "(%d purchase(s))" % (modname, len(purchases)),
+                              len(purchases) == 1 and again is False)
+            return solved, first_read, ok_budget
         finally:
             mod.solve_recaptcha, mod.time.sleep = saved_solve, saved_sleep
 
@@ -2331,7 +2345,8 @@ def test_engine_parity(skips):
         result = drive(modname, build, read)
         if result is None:
             continue
-        solved, (cookies, reloaded, injected) = result
+        solved, (cookies, reloaded, injected), ok_budget = result
+        ok &= ok_budget
         ok &= check("%s reports the challenge solved" % modname, solved is True)
         ok &= check("%s set exactly one cookie" % modname, len(cookies) == 1)
         if cookies:
@@ -2584,7 +2599,7 @@ def test_aws_waf_two_actions():
                 got is not None)
     ok &= check("...but is reported as the challenge action",
                 got and got.aws_waf_action == "challenge")
-    ok &= check("...and is recognised as carrying NO widget -- section 19's "
+    ok &= check("...and is recognised as carrying NO widget -- "
                 "'unsolvable is a property of a page', measured rather than "
                 "assumed", got and not got.has_captcha_widget)
     ok &= check("both actions still yield the fields a task would need, so "
@@ -3074,7 +3089,7 @@ def test_scraper_api_client():
             a = _FakeArgs(mode="market-values", retries=2, retry_delay=0,
                          url="https://www.transfermarkt.com/x",
                          out=os.path.join(tmpdir, "out_blocked"))
-            rows, blocked_by, status, html = sac._fetch_one_page(a, 1, a.url)
+            rows, blocked_by, status, html, _failure = sac._fetch_one_page(a, 1, a.url)
             ok &= check("a page that classifies as blocked is retried "
                         "--retries+1 times, not returned on the first "
                         "attempt",
@@ -3134,7 +3149,7 @@ def test_no_capture_leaks():
     return ok
 
 
-# Wording the family enforces. See CLAUDE.md's own note on why: two of these
+# Wording the family enforces. Why: two of these
 # names were used for a placeholder endpoint that never existed, and one
 # names a real 2Captcha product under the wrong term.
 BANNED_PHRASES = (
@@ -3395,7 +3410,7 @@ def test_fingerprint_client_reads_env():
     # This file used to be the one CLI in the repo that skipped env_config
     # entirely and read only its own --key flag -- so a TWOCAPTCHA_KEY set in
     # .env or exported the way every other script here reads it was silently
-    # ignored, and the first thing CLAUDE.md tells someone to run when a key
+    # ignored, and the first thing to run when a key
     # "isn't working" (`python3 fingerprint_client.py`) could not see it.
     saved = os.environ.pop("TWOCAPTCHA_KEY", None)
     old_argv = sys.argv
@@ -3653,6 +3668,13 @@ def test_concurrent_dispatch(skips):
                 len(results) + len(unattempted) + 1 >= len(specs))
     ok &= check("the pages other workers fetched still come back",
                 any(o.page_num != 3 for o in results))
+    # The page the dead worker had taken used to be in neither list, so the
+    # run reported "complete" with that page missing from the output.
+    accounted = sorted([o.page_num for o in results] + list(unattempted))
+    ok &= check("the page a dead worker was holding is accounted for",
+                accounted == [n for n, _ in specs])
+    ok &= check("...as a FAILED page, so the run cannot end complete",
+                any(o.page_num == 3 and not o.ok for o in results))
     return ok
 
 
@@ -3775,7 +3797,7 @@ def test_dockerfile_copies_what_it_runs():
 
 
 def test_shared_calls_bind_against_the_real_signature():
-    """§17's check #1: bind every call into a shared module against the
+    """Bind every call into a shared module against the
     callee's real signature.
 
     This exists because of a defect that no other check in this suite can
@@ -4095,6 +4117,539 @@ def test_retries_is_validated_in_every_entry_point():
     return check("--retries is validated in every entry point, so 0 is a usage error", not problems)
 
 
+# ---------------------------------------------------------------------------
+# Audit fixes, 2026-10-14
+# ---------------------------------------------------------------------------
+
+# The site's own 404 page, captured 2026-10-15 for a club id that does not
+# exist (`/x/kader/verein/99999999`, HTTP 404) and identical in structure for
+# an unknown path. Cut to the title and the error block; the contact address
+# the page prints is removed.
+FIX_NOT_FOUND = """<!DOCTYPE html><html lang="en"><head><title>Error | Transfermarkt</title></head><body>
+<main id="tm-main">
+            <div class="row">
+    <div class="large-6 colums small-6">
+        <p class="text1"><b>ERROR 404</b></p>
+        <p class="text2">We missed that one.</p>
+        <div class="balken"></div>
+        <p class="text3">… just try again. :-)</p>
+        <p class="text4">Please send error message to: <a href="#">[address removed]</a></p>
+    </div>
+</div>
+</main></body></html>"""
+
+
+# The edge's bare 404 for the doubled gallery next-link, exactly as the canary
+# saved it on 2026-10-05 (run 37339994696, canary_run_page2_debug.html).
+FIX_NGINX_404 = """<html><head><title>404 Not Found</title></head>
+<body>
+<center><h1>404 Not Found</h1></center>
+<hr><center>nginx</center>
+</body></html>"""
+
+
+def test_atomic_writes_and_modes():
+    group("output: a failed write keeps the previous file; modes follow open()")
+    ok = True
+    import output_writer as ow
+    tmp = tempfile.mkdtemp(prefix="tm_atomic_")
+    try:
+        good = [Player(url="https://www.transfermarkt.com/a", sku="1", title="A",
+                       price=1.0, currency="EUR")]
+        path = os.path.join(tmp, "out.json")
+        write_json(good, path)
+        before = open(path, encoding="utf-8").read()
+
+        real_dump = ow.json.dump
+
+        def failing_dump(obj, f, **kw):
+            f.write('[{"partial": ')
+            raise OSError("disk full (simulated)")
+        ow.json.dump = failing_dump
+        try:
+            try:
+                write_json(good * 3, path)
+                raised = False
+            except OSError:
+                raised = True
+        finally:
+            ow.json.dump = real_dump
+        ok &= check("a write that fails part-way raises", raised)
+        ok &= check("...and leaves the previous good file byte-identical",
+                    open(path, encoding="utf-8").read() == before)
+        ok &= check("...and leaves no temporary file behind",
+                    sorted(os.listdir(tmp)) == ["out.json"])
+
+        for umask in (0o002, 0o022):
+            old = os.umask(umask)
+            try:
+                p = os.path.join(tmp, "new_%o.csv" % umask)
+                write_csv(good, p)
+                mode = os.stat(p).st_mode & 0o777
+            finally:
+                os.umask(old)
+            ok &= check("a NEW file gets 0666 & ~umask (umask %03o -> %03o, got %03o)"
+                        % (umask, 0o666 & ~umask, mode), mode == 0o666 & ~umask)
+        os.chmod(path, 0o640)
+        write_json(good, path)
+        ok &= check("an EXISTING file keeps its own mode (0640)",
+                    os.stat(path).st_mode & 0o777 == 0o640)
+        meta = os.path.join(tmp, "m")
+        write_run_meta(meta, {"status": "complete"})
+        ok &= check("the run-metadata sidecar goes through the same writer",
+                    json.load(open(meta + ".meta.json"))["status"] == "complete")
+        src = open(os.path.join(REPO_ROOT, "output_writer.py"), encoding="utf-8").read()
+        ok &= check("no writer in output_writer.py truncates its target in place",
+                    'open(path, "w"' not in src.replace('`open(path, "w")`', ""))
+        diff_src = open(os.path.join(REPO_ROOT, "diff_runs.py"), encoding="utf-8").read()
+        ok &= check("diff_runs.py writes its report through the atomic writer",
+                    "with _atomic(args.out)" in diff_src
+                    and 'open(args.out, "w"' not in diff_src)
+        # Capture kinds stay out of git; the landing page and the suite do not.
+        try:
+            def ignored(p):
+                return subprocess.run(["git", "-C", REPO_ROOT, "check-ignore", "-q", p]).returncode == 0
+            if subprocess.run(["git", "-C", REPO_ROOT, "rev-parse"], capture_output=True).returncode == 0:
+                ok &= check("captures are ignored by kind (live/, out/, a root dump, .pageN)",
+                            all(ignored(p) for p in ("live/x.html", "out/x.html", "dump.html",
+                                                     "x.json.page3", ".env.bak")))
+                ok &= check("...while index.html, .github/, tests/ and .env.example still commit",
+                            not any(ignored(p) for p in ("index.html", ".github/ci_checks.py",
+                                                         "tests/test_smoke.py", ".env.example",
+                                                         "sample_output.json")))
+        except OSError:
+            pass
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return ok
+
+
+def test_csv_formula_escape():
+    group("output: formula-shaped CSV cells are neutralised, JSON is not")
+    ok = True
+    tmp = tempfile.mkdtemp(prefix="tm_csv_")
+    try:
+        rows = [Player(url="https://www.transfermarkt.com/a", sku="1",
+                       title='=HYPERLINK("http://x")', price=-5.0,
+                       currency="EUR", nationalities=["@x", "Spain"],
+                       club="+Club", position="\tWing", agent="Plain")]
+        prefix = os.path.join(tmp, "out")
+        rc = finish_run(rows, prefix, "both", False, blocked=False,
+                        stop_reason="completed", pages_requested=1,
+                        pages_completed=1, start_url="u", final_url="u",
+                        extra={"site_note": "kept"})
+        ok &= check("a complete run still exits 0", rc == 0)
+        with open(prefix + ".csv", encoding="utf-8", newline="") as f:
+            row = next(csv.DictReader(f))
+        ok &= check("a leading = gets an apostrophe in the CSV",
+                    row["title"] == '\'=HYPERLINK("http://x")')
+        ok &= check("a joined list is escaped after the join (@ first)",
+                    row["nationalities"].startswith("'@x"))
+        ok &= check("leading + and TAB are escaped too",
+                    row["club"] == "'+Club" and row["position"] == "'\tWing")
+        ok &= check("a negative NUMBER is left a number", row["price"] == "-5.0")
+        ok &= check("an ordinary string is untouched", row["agent"] == "Plain")
+        data = json.load(open(prefix + ".json", encoding="utf-8"))
+        ok &= check("the JSON keeps the site's text exactly",
+                    data[0]["title"] == '=HYPERLINK("http://x")'
+                    and data[0]["nationalities"][0] == "@x")
+        meta = json.load(open(prefix + ".meta.json", encoding="utf-8"))
+        ok &= check("the sidecar counts the escaped cells (4)",
+                    meta.get("csv_cells_escaped") == 4)
+        ok &= check("...beside the caller's own extra keys",
+                    meta.get("site_note") == "kept")
+        rc = finish_run(rows, prefix, "both", False, blocked=False,
+                        stop_reason="completed", pages_requested=1,
+                        pages_completed=1, start_url="u", final_url="u",
+                        extra={"csv_cells_escaped": "caller wins"})
+        meta = json.load(open(prefix + ".meta.json", encoding="utf-8"))
+        ok &= check("the count is merged UNDER the caller's extra, never over it",
+                    meta.get("csv_cells_escaped") == "caller wins")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return ok
+
+
+# Numeric flags that count pages, attempts, workers, exits or seconds, and
+# the floor each must enforce. Anything numeric not listed here (or in
+# --retries' own check) fails the check below, so a new flag is decided on
+# rather than inherited as a plain int.
+BOUNDED_FLAGS = {
+    "playwright_scraper.py": {"--pages": 1, "--delay": 0, "--concurrency": 1,
+                              "--retry-delay": 0, "--proxy-sessions": 1,
+                              "--proxy-block-retries": 0},
+    "puppeteer_scraper.py": {"--pages": 1, "--delay": 0, "--concurrency": 1,
+                             "--retry-delay": 0, "--proxy-sessions": 1,
+                             "--proxy-block-retries": 0},
+    "selenium_scraper.py": {"--pages": 1, "--delay": 0, "--concurrency": 1,
+                            "--retry-delay": 0, "--proxy-sessions": 1,
+                            "--proxy-block-retries": 0},
+    "scraper_api_client.py": {"--pages": 1, "--delay": 0, "--timeout": 1,
+                              "--retries": 0, "--retry-delay": 0},
+}
+# Numeric, and deliberately not a count: a score threshold.
+UNBOUNDED_NUMERIC_FLAGS = {"--min-score"}
+
+
+def test_numeric_flags_are_bounded():
+    group("CLI: counts and delays reject values below their floor (exit 2)")
+    ok = True
+    import argparse as _ap
+    import ast as _ast
+    for name, flags in BOUNDED_FLAGS.items():
+        tree = _ast.parse(open(os.path.join(REPO_ROOT, name), encoding="utf-8").read())
+        found = {}
+        for node in _ast.walk(tree):
+            if not (isinstance(node, _ast.Call)
+                    and getattr(node.func, "attr", "") == "add_argument"
+                    and node.args and isinstance(node.args[0], _ast.Constant)):
+                continue
+            kind = next((k.value for k in node.keywords if k.arg == "type"), None)
+            if kind is not None:
+                found[node.args[0].value] = kind
+        for flag, floor in flags.items():
+            kind = found.get(flag)
+            good = (isinstance(kind, _ast.Call)
+                    and _ast.unparse(kind.func) == "page_flow.bounded"
+                    and len(kind.args) == 3
+                    and _ast.literal_eval(kind.args[1]) == floor
+                    and _ast.literal_eval(kind.args[2]) == flag)
+            ok &= check("%s %s goes through page_flow.bounded with floor %s"
+                        % (name, flag, floor), good)
+        stray = sorted(f for f, k in found.items()
+                       if _ast.unparse(k) in ("int", "float")
+                       and f not in flags and f not in UNBOUNDED_NUMERIC_FLAGS)
+        ok &= check("%s declares no other plain int/float flag%s"
+                    % (name, ": " + ", ".join(stray) if stray else ""), not stray)
+    for kind, floor, bad, good in ((int, 1, ("0", "-1", "x"), "2"),
+                                   (float, 0, ("-0.5", "nan?"), "0")):
+        validator = page_flow.bounded(kind, floor, "--flag")
+        for value in bad:
+            try:
+                validator(value)
+                rejected = False
+            except _ap.ArgumentTypeError as e:
+                rejected = "--flag" in str(e)
+            ok &= check("bounded(%s, %s) rejects %r naming the flag"
+                        % (kind.__name__, floor, value), rejected)
+        ok &= check("bounded(%s, %s) accepts %r" % (kind.__name__, floor, good),
+                    validator(good) == kind(good))
+    return ok
+
+
+def test_env_url_does_not_hijack_builders(skips):
+    group("TRANSFERMARKT_URL from the environment never overrides a typed builder flag")
+    ok = True
+    import ast as _ast
+    from product_parser import url_kind
+    ok &= check(".env.example ships TRANSFERMARKT_URL commented out",
+                not re.search(r"(?m)^TRANSFERMARKT_URL=",
+                              open(os.path.join(REPO_ROOT, ".env.example"),
+                                   encoding="utf-8").read()))
+    ok &= check("url_kind reads the four page kinds",
+                url_kind(MARKET_VALUES_URL) == "market-values"
+                and url_kind(TRANSFERS_URL) == "transfers"
+                and url_kind(club_squad_url("27")) == "club-squad"
+                and url_kind(player_url("8198")) == "player"
+                and url_kind("https://www.transfermarkt.com/x") is None)
+    conflict = page_flow.env_url_conflict
+    ok &= check("a typed --club-id beats the environment's URL",
+                conflict(MARKET_VALUES_URL, "club-squad", club_id="27") is not None)
+    ok &= check("a URL of another page kind does not stand in for --mode transfers",
+                conflict(MARKET_VALUES_URL, "transfers") is not None)
+    ok &= check("a URL of the same kind, with no builder flag, is used",
+                conflict(MARKET_VALUES_URL + "?page=2", "market-values") is None)
+
+    # Structural: the typed value is captured BEFORE the environment fills it.
+    for name in ENGINE_FILES + ("scraper_api_client.py",):
+        tree = _ast.parse(open(os.path.join(REPO_ROOT, name), encoding="utf-8").read())
+        fn = next(n for n in tree.body if isinstance(n, _ast.FunctionDef)
+                  and n.name == "parse_args")
+        capture = apply_line = conflict_line = None
+        for node in _ast.walk(fn):
+            if (isinstance(node, _ast.Assign) and _ast.unparse(node) == "typed_url = args.url"):
+                capture = node.lineno
+            if isinstance(node, _ast.Call) and _ast.unparse(node.func) == "env_config.apply":
+                apply_line = node.lineno
+            if isinstance(node, _ast.Call) and _ast.unparse(node.func) == "page_flow.env_url_conflict":
+                conflict_line = node.lineno
+        ok &= check("%s captures the typed --url before env_config.apply and "
+                    "then consults env_url_conflict" % name,
+                    capture and apply_line and conflict_line
+                    and capture < apply_line < conflict_line)
+
+    # Behavioural, through each real parse_args with the variable exported.
+    saved_env = {k: os.environ.get(k) for k in ("TRANSFERMARKT_URL", "TWOCAPTCHA_KEY")}
+    saved_argv = sys.argv
+    try:
+        os.environ["TRANSFERMARKT_URL"] = MARKET_VALUES_URL
+        os.environ["TWOCAPTCHA_KEY"] = "test-placeholder"
+        for modname in ("scraper_api_client", "playwright_scraper",
+                        "puppeteer_scraper", "selenium_scraper"):
+            try:
+                mod = importlib.import_module(modname)
+            except ImportError as e:
+                skips.append("%s .env URL parse_args (%s)" % (modname, e))
+                continue
+            for argv, want in ((["--mode", "club-squad", "--club-id", "27"], club_squad_url("27")),
+                               (["--mode", "player", "--player-id", "8198"], player_url("8198")),
+                               (["--mode", "transfers"], TRANSFERS_URL),
+                               (["--mode", "market-values"], MARKET_VALUES_URL),
+                               (["--mode", "player", "--url", player_url("1")], player_url("1"))):
+                sys.argv = [modname + ".py"] + argv
+                got = mod.parse_args().url
+                ok &= check("%s %s -> %s" % (modname, " ".join(argv), want), got == want)
+    finally:
+        sys.argv = saved_argv
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    return ok
+
+
+def test_not_found_and_parser_failure():
+    group("page states: the site's 404 is not a block; rows lost by the parser are not an empty result")
+    ok = True
+    import output_writer as ow
+    for status in (None, 404, 200):
+        ok &= check("the real 404 page is not_found (status=%s)" % status,
+                    detect_page_state(FIX_NOT_FOUND, status=status) == "not_found")
+    ok &= check("the edge's bare nginx 404 (gallery next-link) is not_found without "
+                "its status, so a chained run cannot take it for the end",
+                detect_page_state(FIX_NGINX_404) == "not_found")
+    ok &= check("an HTTP 404 is not_found whatever the body",
+                detect_page_state(FIX_MARKET_VALUES, status=404) == "not_found")
+    for name, fixture in (("market-values", FIX_MARKET_VALUES), ("squad", FIX_CLUB_SQUAD),
+                          ("transfers", FIX_TRANSFERS), ("player", FIX_PLAYER_DETAIL)):
+        ok &= check("the real %s capture is not mistaken for a 404" % name,
+                    detect_page_state(fixture) == "content")
+    ok &= check("not_found is neither retried, paid for nor counted as blocked",
+                not (page_flow.should_retry("not_found") or page_flow.should_solve("not_found")
+                     or page_flow.counts_as_blocked("not_found")))
+
+    roe = page_flow.redirected_off_entity
+    ok &= check("an unknown player id redirected to the ranking is not_found",
+                roe("player", player_url("999999999"), MARKET_VALUES_URL))
+    ok &= check("a profile that stays on its own id is not",
+                not roe("player", player_url("418560"),
+                        "https://www.transfermarkt.com/erling-haaland/profil/spieler/418560"))
+    ok &= check("a squad URL keeping its club id is not",
+                not roe("club-squad", club_squad_url("27", season="2025"),
+                        "https://www.transfermarkt.com/fc-bayern-munchen/kader/verein/27"))
+    ok &= check("a listing mode is never judged this way",
+                not roe("market-values", MARKET_VALUES_URL, TRANSFERS_URL))
+
+    ok &= check("page_states_rows: a ranking with profile links states rows",
+                product_parser.page_states_rows(FIX_MARKET_VALUES, "market-values"))
+    ok &= check("page_states_rows: a profile header states its row",
+                product_parser.page_states_rows(FIX_PLAYER_DETAIL, "player"))
+    ok &= check("page_states_rows: an empty table states none",
+                not product_parser.page_states_rows(
+                    '<table class="items"><tbody></tbody></table>', "club-squad"))
+    ok &= check("page_states_rows: the 404 page states none",
+                not product_parser.page_states_rows(FIX_NOT_FOUND, "player"))
+
+    tmp = tempfile.mkdtemp(prefix="tm_states_")
+    try:
+        common = dict(blocked=False, pages_requested=2, start_url="u", final_url="u")
+        row = Player(url="u", sku="1", title="A")
+        ok &= check("page 1 not_found -> exit 4 (the site's answer), no file",
+                    finish_run([], os.path.join(tmp, "a"), "json", False,
+                               stop_reason="not_found", pages_completed=1, **common) == 4
+                    and not os.path.exists(os.path.join(tmp, "a.json")))
+        ok &= check("parser_found_nothing on page 1 -> exit 5, not 4",
+                    finish_run([], os.path.join(tmp, "b"), "json", False,
+                               stop_reason="parser_found_nothing", pages_completed=0,
+                               pages_failed=[1], **common) == 5)
+        ok &= check("parser_found_nothing after rows -> exit 6",
+                    finish_run([row], os.path.join(tmp, "c"), "json", False,
+                               stop_reason="parser_found_nothing", pages_completed=1,
+                               pages_failed=[2], **common) == 6)
+        ok &= check("parser_found_nothing is not a complete stop reason",
+                    "parser_found_nothing" not in ow.COMPLETE_STOP_REASONS)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    class O:
+        def __init__(self, **kw):
+            self.load_failed = self.parse_failed = False
+            self.blocked_by = self.state = None
+            self.__dict__.update(kw)
+    ok &= check("failure_reason names a parser failure",
+                page_flow.failure_reason(O(parse_failed=True)) == "parser_found_nothing")
+    ok &= check("failure_reason names a later page's 404",
+                page_flow.failure_reason(O(state="not_found")) == "page_not_found")
+    ok &= check("failure_reason still names a block",
+                page_flow.failure_reason(O(blocked_by="AWS WAF")) == "blocked_AWS WAF")
+
+    # Each engine routes both outcomes, read off the source so this holds
+    # with no engine library installed.
+    for name in ENGINE_FILES:
+        src = open(os.path.join(REPO_ROOT, name), encoding="utf-8").read()
+        ok &= check("%s marks a served page whose rows the parser lost" % name,
+                    "page_states_rows(html, args.mode)" in src
+                    and "outcome.parse_failed = True" in src)
+        ok &= check("%s returns not_found before parsing and checks the redirect" % name,
+                    'if state == "not_found":' in src
+                    and "page_flow.redirected_off_entity(" in src)
+        ok &= check("%s treats a challenge state with no vendor marker as blocked" % name,
+                    "if not vendor and page_flow.counts_as_blocked(state):" in src)
+        ok &= check("%s names a failed page through page_flow.failure_reason" % name,
+                    "page_flow.failure_reason(" in src and '"page_load_timeout" if' not in src)
+
+    # Behavioural, through the Scraper API client's real fetch/scrape.
+    import scraper_api_client as sac
+    real = sac.fetch_html, sac.time.sleep
+    calls = []
+    tmp = tempfile.mkdtemp(prefix="tm_states_api_")
+    try:
+        sac.time.sleep = lambda *_: None
+
+        def args_for(mode, url, out, allow_empty=False):
+            return type("A", (), dict(mode=mode, url=url, pages=1, delay=0,
+                                      format="json", out=os.path.join(tmp, out),
+                                      retries=2, retry_delay=0, dump_html=None,
+                                      allow_empty=allow_empty, timeout=60, club_id=None,
+                                      season=None, player_id=None))()
+
+        sac.fetch_html = lambda a, u, t: calls.append(u) or (FIX_NOT_FOUND, 404, {})
+        rc = sac.scrape(args_for("club-squad", club_squad_url("99999999"), "nf"))
+        ok &= check("scraper_api_client: the 404 page -> exit 4, fetched once (not "
+                    "retried as a block)", rc == 4 and len(calls) == 1)
+        redirected = FIX_MARKET_VALUES.replace(
+            "<head>", '<head><meta property="og:url" content="%s">' % MARKET_VALUES_URL, 1)
+        sac.fetch_html = lambda a, u, t: (redirected, 200, {})
+        rc = sac.scrape(args_for("player", player_url("999999999"), "redir", allow_empty=True))
+        meta = json.load(open(os.path.join(tmp, "redir.meta.json"), encoding="utf-8"))
+        ok &= check("scraper_api_client: an unknown player id answered with the "
+                    "ranking is stop_reason not_found, not an empty profile",
+                    meta.get("stop_reason") == "not_found")
+        challenge_only = "<html><body>please wait</body></html>"
+        sac.fetch_html = lambda a, u, t: (challenge_only, 405, {"x-amzn-waf-action": "captcha"})
+        rc = sac.scrape(args_for("market-values", MARKET_VALUES_URL, "hdr"))
+        ok &= check("scraper_api_client: a captcha named only by its response "
+                    "header is blocked (exit 3), not parsed as an empty page", rc == 3)
+        lost = ('<html><body><table class="items"><tbody><tr><td>'
+                '<a href="/x/profil/spieler/1">A</a></td></tr></tbody></table></body></html>')
+        sac.fetch_html = lambda a, u, t: (lost, 200, {})
+        rc = sac.scrape(args_for("market-values", MARKET_VALUES_URL, "lost"))
+        ok &= check("scraper_api_client: rows on the page and none parsed -> "
+                    "exit 5 (parser failure), not exit 4", rc == 5)
+    finally:
+        sac.fetch_html, sac.time.sleep = real
+        shutil.rmtree(tmp, ignore_errors=True)
+    return ok
+
+
+def test_solve_budget_is_per_page():
+    group("paid solves: one allowance per page, checked before every purchase")
+    ok = True
+    import ast as _ast
+    budget = page_flow.SolveBudget()
+    ok &= check("a fresh page allows one solve", budget.take() is True)
+    ok &= check("...and not a second", budget.take() is False and budget.spent == 1)
+    for name in ENGINE_FILES:
+        src = open(os.path.join(REPO_ROOT, name), encoding="utf-8").read()
+        tree = _ast.parse(src)
+        fns = {n.name: n for n in tree.body if isinstance(n, _ast.FunctionDef)}
+        handler = fns["handle_captcha_if_present"]
+        kwonly = [a.arg for a in handler.args.kwonlyargs]
+        required = handler.args.kw_defaults[kwonly.index("budget")] is None if "budget" in kwonly else False
+        ok &= check("%s: handle_captcha_if_present REQUIRES a budget (keyword, "
+                    "no default), so no call site can forget it" % name, required)
+        take = [n.lineno for n in _ast.walk(handler) if isinstance(n, _ast.Call)
+                and _ast.unparse(n.func) == "budget.take"]
+        buy = [n.lineno for n in _ast.walk(handler) if isinstance(n, _ast.Call)
+               and _ast.unparse(n.func) == "solve_recaptcha"]
+        ok &= check("%s: the allowance is checked before the solver is called" % name,
+                    take and buy and max(take) < min(buy))
+        fetch = fns["_fetch_one_page"]
+        made = [n.lineno for n in _ast.walk(fetch) if isinstance(n, _ast.Call)
+                and _ast.unparse(n.func) == "page_flow.SolveBudget"]
+        loop = [n.lineno for n in _ast.walk(fetch) if isinstance(n, _ast.For)
+                and _ast.unparse(n.target) == "block_attempt"]
+        ok &= check("%s: one budget per page, made before the retry/rotation loop"
+                    % name, len(made) == 1 and loop and made[0] < loop[0])
+        calls = [n for n in _ast.walk(tree) if isinstance(n, _ast.Call)
+                 and _ast.unparse(n.func) == "handle_captcha_if_present"]
+        ok &= check("%s: every call passes that budget (%d call(s))" % (name, len(calls)),
+                    calls and all(any(k.arg == "budget" and _ast.unparse(k.value) == "budget"
+                                      for k in c.keywords) for c in calls))
+    return ok
+
+
+def test_credential_scan_judges_paths_inside_the_repo():
+    group("ci_checks: a clone's parent directories cannot switch the scan off")
+    ok = True
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_ci_checks_under_test", os.path.join(REPO_ROOT, ".github", "ci_checks.py"))
+    cc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cc)
+    tmp = tempfile.mkdtemp(prefix="tm_scan_")
+    saved = cc.REPO
+    try:
+        from pathlib import Path as _P
+        repo = _P(tmp) / "venv" / "repo"
+        repo.mkdir(parents=True)
+        (repo / "notes.py").write_text("KEY = '%s'\n" % ("ab12" * 8), encoding="utf-8")
+        cc.REPO = repo
+        cc._VENV_CACHE.clear()
+        failed = cc.secret_check()
+        ok &= check("a clone under a directory named venv/ still scans and "
+                    "catches a planted key-shaped string",
+                    any("notes.py" in line for line in failed))
+        (repo / "notes.py").unlink()
+        failed = cc.secret_check()
+        ok &= check("a scan that read 0 files fails instead of reporting clean",
+                    any("0 files scanned" in line for line in failed))
+    finally:
+        cc.REPO = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+    return ok
+
+
+def test_no_private_citations():
+    group("public files cite no private working notes")
+    ok = True
+    # Assembled from pieces so this file does not match itself.
+    banned = [re.compile(re.escape("CLAUDE" + ".md")),
+              re.compile(re.escape("claude" + "_2scraper")),
+              re.compile(re.escape("2scraper" + "_repo_rules")),
+              re.compile("play" + r"book\s*" + "§"),
+              re.compile("templ" + r"ate\s*" + "§"),
+              re.compile("§" + r"\s*\d"),
+              re.compile(r"\b[Ss]ec" + r"tion\s+\d+\b(?!\s*(?:of|in)\s+(?:RFC|the\s+HTTP))")]
+    try:
+        tracked = subprocess.run(["git", "-C", REPO_ROOT, "ls-files"], capture_output=True,
+                                 text=True, check=True).stdout.split()
+    except (OSError, subprocess.CalledProcessError):
+        tracked = []
+        for base, dirs, files in os.walk(REPO_ROOT):
+            dirs[:] = [d for d in dirs if d not in (".git", "__pycache__")
+                       and not os.path.isfile(os.path.join(base, d, "pyvenv.cfg"))]
+            tracked += [os.path.relpath(os.path.join(base, f), REPO_ROOT) for f in files]
+    hits = []
+    for rel in tracked:
+        path = os.path.join(REPO_ROOT, rel)
+        if not os.path.isfile(path):
+            continue
+        try:
+            text = open(path, encoding="utf-8").read()
+        except (UnicodeDecodeError, OSError):
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if any(p.search(line) for p in banned):
+                hits.append("%s:%d" % (rel, lineno))
+    for h in hits[:10]:
+        print("      " + h)
+    ok &= check("no tracked file cites the private notes (%d hit(s))" % len(hits), not hits)
+    ok &= check("...and the scan actually read files (%d)" % len(tracked), len(tracked) > 20)
+    return ok
+
+
 def main() -> int:
     ok = True
     # Checks that could not run because an optional engine library is absent.
@@ -4149,6 +4704,14 @@ def main() -> int:
     ok &= test_x_debug_header_is_redacted()
     ok &= test_scraper_api_waitfor_is_an_object()
     ok &= test_aws_waf_challenge_is_waited_out()
+    ok &= test_atomic_writes_and_modes()
+    ok &= test_csv_formula_escape()
+    ok &= test_numeric_flags_are_bounded()
+    ok &= test_env_url_does_not_hijack_builders(skips)
+    ok &= test_not_found_and_parser_failure()
+    ok &= test_solve_budget_is_per_page()
+    ok &= test_credential_scan_judges_paths_inside_the_repo()
+    ok &= test_no_private_citations()
 
     print()
     if _failures:
