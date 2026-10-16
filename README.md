@@ -490,7 +490,7 @@ If you already have proxies from somewhere else, `--proxy-file` takes any
 list.
 
 **None of these was needed from a GitHub runner on the days measured.** The
-daily canary runs the Playwright engine from a bare runner with no key, no
+weekly canary runs the Playwright engine from a bare runner with no key, no
 proxy and no endpoint; from 2026-10-06 to 2026-10-15 every run read 75 rows
 over 3 market-values pages, the AWS WAF *challenge* action clearing by
 itself in about a second. That is a fact about those runners' addresses on

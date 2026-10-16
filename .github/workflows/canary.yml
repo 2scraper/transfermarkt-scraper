@@ -39,12 +39,8 @@ name: canary
 # so the same two lines are correct with and without them.
 on:
   schedule:
-    # Once a day, off the hour, so it is not competing with everyone else's
+    # Once a week (Mondays), off the hour, so it is not competing with everyone else's
     # on-the-hour cron jobs for runner availability.
-    - cron: "37 7 * * *"
-    # Mondays: the same jobs, WITH the paid secrets (proxy, Scraping Browser,
-    # captcha key). On the daily run above those secrets read as empty, so
-    # it takes the free no-secret route and bills nothing.
     - cron: "37 7 * * 1"
   workflow_dispatch:
 
@@ -55,8 +51,8 @@ jobs:
       # `secrets` is not available in a job-level `if`, so presence is tested
       # here, once, and read from each step's `if` and shell below. These are
       # the strings "true"/"false", never the secret itself.
-      HAVE_CDP: ${{ (github.event_name != 'schedule' || github.event.schedule == '37 7 * * 1') && secrets.TRANSFERMARKT_CDP_ENDPOINT != '' }}
-      HAVE_PROXY: ${{ (github.event_name != 'schedule' || github.event.schedule == '37 7 * * 1') && secrets.TRANSFERMARKT_PROXY != '' }}
+      HAVE_CDP: ${{ secrets.TRANSFERMARKT_CDP_ENDPOINT != '' }}
+      HAVE_PROXY: ${{ secrets.TRANSFERMARKT_PROXY != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -97,8 +93,8 @@ jobs:
           # Through the environment, never argv (see the header). Unset
           # secrets arrive as "" and env_config.py treats that as unset, so
           # these lines are correct in both configurations.
-          TRANSFERMARKT_CDP_ENDPOINT: ${{ (github.event_name != 'schedule' || github.event.schedule == '37 7 * * 1') && secrets.TRANSFERMARKT_CDP_ENDPOINT || '' }}
-          TRANSFERMARKT_PROXY: ${{ (github.event_name != 'schedule' || github.event.schedule == '37 7 * * 1') && secrets.TRANSFERMARKT_PROXY || '' }}
+          TRANSFERMARKT_CDP_ENDPOINT: ${{ secrets.TRANSFERMARKT_CDP_ENDPOINT }}
+          TRANSFERMARKT_PROXY: ${{ secrets.TRANSFERMARKT_PROXY }}
         run: |
           set +e
           python3 playwright_scraper.py \
@@ -116,8 +112,8 @@ jobs:
         # 4 pages (77 transfers) the same day.
         continue-on-error: true
         env:
-          TRANSFERMARKT_CDP_ENDPOINT: ${{ (github.event_name != 'schedule' || github.event.schedule == '37 7 * * 1') && secrets.TRANSFERMARKT_CDP_ENDPOINT || '' }}
-          TRANSFERMARKT_PROXY: ${{ (github.event_name != 'schedule' || github.event.schedule == '37 7 * * 1') && secrets.TRANSFERMARKT_PROXY || '' }}
+          TRANSFERMARKT_CDP_ENDPOINT: ${{ secrets.TRANSFERMARKT_CDP_ENDPOINT }}
+          TRANSFERMARKT_PROXY: ${{ secrets.TRANSFERMARKT_PROXY }}
         run: |
           set +e
           python3 playwright_scraper.py \
