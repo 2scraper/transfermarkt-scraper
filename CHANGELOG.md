@@ -4,6 +4,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- CI only: the canary's optional paid secrets `TRANSFERMARKT_CDP_ENDPOINT`, `TRANSFERMARKT_PROXY` now reach it only on a new weekly
+  run (Mondays 07:37 UTC) and on a manual dispatch. The daily run keeps its
+  schedule and takes the free route without them, so it bills nothing.
+
 ## [1.2.0] — 2026-10-16
 
 > **Behaviour change:** `--retries 0` is now a usage error (exit 2). It used
