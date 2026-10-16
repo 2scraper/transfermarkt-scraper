@@ -37,8 +37,55 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 > - **The canary fails when it is blocked.** A bare-runner exit 3 used to
 >   end green with a notice.
 
+> **Behaviour change (latest transfers):** a page whose rows were all seen on
+> earlier pages is no longer counted. When the page before it had no next
+> link the run ends `stop_reason: listing_ended` (exit 0, was
+> `no_new_products`) with `repeated_page`, `repeat_of_page` and
+> `listing_pages` in the sidecar; when the page before it linked onward the
+> run ends `stop_reason: page_repeated`, exit 6 (was exit 0, "complete").
+> `pages_completed` no longer counts the repeated page.
+>
+> **Behaviour change (server errors):** an HTTP 5xx from Transfermarkt, or
+> the edge's bare nginx 5xx page where no status is visible, is a server
+> error, not a block. The page is fetched again on the same exit up to 2
+> times (`--retry-delay` x1, x2, no proxy rotation, no paid solve), then
+> failed with `stop_reason: target_http_5xx`: exit 5 on page 1, exit 6 on a
+> later page. A visible 5xx used to be exit 3 ("blocked"), and the bare 502
+> page used to read as an empty page.
+
+### Added
+
+- **`--mode transfers --min-value EUR`** (all four entry points) reads the
+  latest-transfers listing filtered to players valued at least EUR (0 = no
+  floor) through its filtered path,
+  `/transfers/neuestetransfers/statistik?...&minMarktwert=EUR`, keeping any
+  filters a typed `--url` already carries. Without it, the site's own default
+  view is read, as before. A negative or non-integer value, or the flag with
+  another `--mode`, is exit 2. The sidecar records `min_market_value_eur`
+  and `market_value_filter` (`url`, or `site_default` when the floor is the
+  site's own and not in the URL).
+
 ### Fixed
 
+- **`--mode transfers` counted a page the site did not serve.** Measured
+  2026-10-15: the default latest-transfers view held 20 transfers (the site
+  filters it to players valued EUR 500,000+), had no pager, and answered
+  `?page=2` with page 1 again. The run fetched page 2, found nothing new,
+  and reported `pages_completed: 2`, `status: complete`. A page number past
+  the end of a longer listing is answered the same way, with the last page
+  again. A page that only repeats earlier rows is now recorded as the
+  listing's end (when the page before it had no next link) or as a page not
+  served (when it had one), in all four entry points and in Playwright's
+  `--concurrency` path, which also stops dispatching once a page repeats.
+  The README documents the filter; `--min-value 0` reads the unfiltered
+  listing (4 pages, 77 transfers that day).
+- **A 502 after the AWS WAF challenge ended a run "complete" with page 1
+  missing.** Measured 2026-10-15: the challenge cleared and the document left
+  in the browser was the edge's 155-byte nginx `502 Bad Gateway`. Its status
+  had rightly been discarded with the challenge's, so it classified as an
+  empty page, and the run carried on to pages 2-5 and reported 52 of 77
+  rows as complete. The page is now recognised from its body as a server
+  error (see above).
 - **A failed write destroyed the previous good output.** `write_json`,
   `write_csv`, the `.meta.json` sidecar and `diff_runs.py --out` all opened
   their target with `open(path, "w")`, which truncates first: a dump that

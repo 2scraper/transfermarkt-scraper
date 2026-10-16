@@ -91,7 +91,10 @@ on speculatively. Revisit if a live run's data supports it.
 rel="next">` reads `?page=2`, a bare query parameter, and a stateless fetch
 of `?page=2` measured 0 shared transfer ids against page 1 (25 rows each) —
 genuinely, independently addressable on every capture taken of it so far,
-which is the one mode `--concurrency` is enabled for.
+which is the one mode `--concurrency` is enabled for. Its END is not a
+missing page, though: a page number past the end serves the last page again
+(measured 2026-10-15), which `PageSequence` below tells apart from a fresh
+page.
 
 What this module deliberately does NOT contain
 ------------------------------------------------
@@ -317,6 +320,12 @@ STATE_POLICY = {
     # all four engines reach the same answer whether or not they can see the
     # status code.
     "not_found": {"retry": False, "solve": False, "blocked": False},
+    # The target's own 5xx: an HTTP 5xx status, or the edge's bare nginx 5xx
+    # page when no status is visible. A transient server error, not a
+    # refusal: never rotated past (`retry` here means "from another exit"),
+    # never paid for, never counted as blocked. Retried on the same exit by
+    # PageAttempts below, then the page is failed as STOP_TARGET_HTTP_5XX.
+    "server_error": {"retry": False, "solve": False, "blocked": False},
 }
 
 
@@ -336,6 +345,62 @@ def counts_as_blocked(state: str) -> bool:
 # A complete answer (exit 4 with no rows): the site said the thing asked for
 # does not exist, which is a fact about the site, not a failed fetch.
 STOP_NOT_FOUND = "not_found"
+
+# Stop reason for a page the target answered with a 5xx after every retry.
+# Not complete and not blocked: exit 5 on page 1, exit 6 on a later page.
+STOP_TARGET_HTTP_5XX = "target_http_5xx"
+
+# How many times a 5xx page is fetched again on the same exit before it is
+# failed. Measured 2026-10-15: the edge answered 3 of about 30 page loads in
+# one evening with a 155-byte nginx 502, each time for a single page, and a
+# later fetch of the same URL was served. Backoff: --retry-delay x 1, x 2.
+SERVER_ERROR_RETRIES = 2
+
+
+class PageAttempts:
+    """The block-retry loop's iterator, plus a bounded same-exit retry for a
+    server error.
+
+    Yields block-attempt indices 0..block_retries like `range()`. After
+    `again_after_server_error()` returns True, the NEXT step yields the same
+    index again, so a 5xx retry does not use up a proxy rotation and never
+    triggers one. The page's SolveBudget lives outside this loop and is not
+    reset by it.
+    """
+
+    def __init__(self, block_retries: int, retry_delay: float = 0.0,
+                 server_retries: Optional[int] = None,
+                 sleep: Optional[Callable[[float], None]] = None):
+        self.block_retries = block_retries
+        self.retry_delay = retry_delay
+        self.server_retries = (SERVER_ERROR_RETRIES if server_retries is None
+                               else server_retries)
+        self.server_retries_used = 0
+        self._sleep = sleep
+        self._index = 0
+        self._repeat = False
+
+    def __iter__(self):
+        while self._index <= self.block_retries:
+            self._repeat = False
+            yield self._index
+            if not self._repeat:
+                self._index += 1
+
+    def again_after_server_error(self, page_num: int, status=None) -> bool:
+        if self.server_retries_used >= self.server_retries:
+            return False
+        self.server_retries_used += 1
+        pause = self.retry_delay * (2 ** (self.server_retries_used - 1))
+        logger.warning("Page %d: the site answered with a server error (HTTP "
+                       "%s) — fetching it again in %.1fs (%d/%d).", page_num,
+                       status if status is not None else "5xx, read from the page",
+                       pause, self.server_retries_used, self.server_retries)
+        if pause:
+            (self._sleep or __import__("time").sleep)(pause)
+        self._repeat = True
+        return True
+
 
 # Stop reason for a served page that holds rows the parser could not read: a
 # markup change, never an empty listing. Not complete, so exit 5 on page 1
@@ -373,11 +438,123 @@ def failure_reason(outcome) -> str:
         return "page_load_timeout"
     if getattr(outcome, "parse_failed", False):
         return STOP_PARSER_FOUND_NOTHING
+    if getattr(outcome, "server_error", False):
+        return STOP_TARGET_HTTP_5XX
     if getattr(outcome, "state", None) == "not_found":
         # Only reachable on a page after the first: page 1's "not found" is
         # the run's answer (STOP_NOT_FOUND), a later page's is a page lost.
         return "page_not_found"
     return f"blocked_{outcome.blocked_by}"
+
+
+# ---------------------------------------------------------------------------
+# A later page that serves an earlier page again
+# ---------------------------------------------------------------------------
+# The listing has ended: the page before the repeat carried no next-page
+# link, and the requested page served rows already seen. Complete.
+STOP_LISTING_ENDED = "listing_ended"
+# The page before carried a next-page link, yet the requested page served
+# rows already seen: pages were requested and not served. Not complete.
+STOP_PAGE_REPEATED = "page_repeated"
+
+
+class PageSequence:
+    """Which keys each served listing page carried, in page order.
+
+    Measured 2026-10-15 on `/transfers/neuestetransfers/statistik`: the site
+    answers a page number past the end with the LAST page again, HTTP 200,
+    its pager still marking the last page as current (`?page=5`, `?page=401`
+    and `?page=9999` all served page 4's two rows when the listing had four
+    pages). The default `/statistik/neuestetransfers` view held 20 rows that
+    day, with no pager, so `?page=2` served page 1 again. Treated as fresh
+    pages, both runs ended "complete" with pages counted that the site never
+    served.
+
+    A page repeats when it has rows and every one of them has a key already
+    seen on an earlier page. Whether that is the listing's end or a lost page
+    depends on the page before it: no next-page link there means the site
+    said the listing ends (`listing_ended`); a next-page link there means the
+    site promised a page and served an old one (`page_repeated`). A page
+    before it that was not served at all (a concurrent run where it failed)
+    counts as a promise, the cautious reading.
+    """
+
+    def __init__(self):
+        self._pages: Dict[int, tuple] = {}   # page_num -> (frozenset, next_url)
+        self.repeat: Optional[dict] = None
+
+    def add(self, page_num: int, rows, next_url: Optional[str]) -> Optional[dict]:
+        """Record one SERVED page (in page order). Returns the verdict dict
+        the first time a page repeats earlier ones, else None."""
+        keys = [getattr(r, "sku", None) for r in rows]
+        seen = set()
+        for earlier, (earlier_keys, _next) in self._pages.items():
+            if earlier < page_num:
+                seen |= earlier_keys
+        repeated = (self.repeat is None and page_num > 1 and keys
+                    and all(k is not None and k in seen for k in keys))
+        self._pages[page_num] = (frozenset(k for k in keys if k is not None),
+                                 next_url)
+        if not repeated:
+            return None
+        key_set = set(keys)
+        same_as = next((p for p, (ks, _n) in sorted(self._pages.items())
+                        if p < page_num and ks == key_set), None)
+        before = self._pages.get(page_num - 1)
+        promised = before is None or before[1] is not None
+        self.repeat = {
+            "page": page_num,
+            "same_as": same_as,
+            "stop_reason": STOP_PAGE_REPEATED if promised else STOP_LISTING_ENDED,
+        }
+        logger.info(
+            "Page %d served %s again (%d row(s), none new)%s.", page_num,
+            f"page {same_as}" if same_as else "rows from earlier pages",
+            len(keys),
+            " although the page before it linked to a next page — recording "
+            "it as a page not served" if promised else
+            "; the page before it had no next-page link, so the listing "
+            "ends there")
+        return self.repeat
+
+    def counts(self, page_num: int) -> bool:
+        """False for the repeated page and every page after it: they are not
+        pages of this listing and are not counted as completed."""
+        return self.repeat is None or page_num < self.repeat["page"]
+
+    def meta(self) -> dict:
+        """Sidecar keys describing the repeat, empty when there was none."""
+        if self.repeat is None:
+            return {}
+        return {"repeated_page": self.repeat["page"],
+                "repeat_of_page": self.repeat["same_as"],
+                "listing_pages": self.repeat["page"] - 1}
+
+
+def listing_filter_meta(mode: str, url: Optional[str]) -> dict:
+    """Sidecar keys naming the market-value floor a transfers run actually
+    used: the one in its URL (`--min-value`, or a typed --url), or the site's
+    own default view, whose floor is not in the URL (EUR 500,000 when
+    measured 2026-10-15; the site sets it, so it is not asserted here)."""
+    if mode != "transfers":
+        return {}
+    from product_parser import min_value_of
+    floor = min_value_of(url)
+    return {"min_market_value_eur": floor,
+            "market_value_filter": "url" if floor is not None else "site_default"}
+
+
+def settle_repeats(outcomes) -> PageSequence:
+    """Run PageSequence over finished outcomes in page order — the concurrent
+    path's version of the check the sequential loop makes as it goes. Pages
+    that were not served are skipped; the page after one counts it as a
+    promise (see PageSequence)."""
+    seq = PageSequence()
+    for oc in sorted(outcomes, key=lambda o: o.page_num):
+        if oc.ok and oc.state != "not_found":
+            if seq.add(oc.page_num, oc.rows, getattr(oc, "next_url", None)):
+                break
+    return seq
 
 
 # At most one paid solve per page. A challenge that survives a solved token

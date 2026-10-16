@@ -132,10 +132,10 @@ from bs4 import BeautifulSoup
 from product_parser import (parse_market_values, parse_club_squad,
                             parse_transfers, parse_player_detail,
                             detect_bot_challenge, detect_page_state, page_url,
-                            page_states_rows, canonical_url,
+                            page_states_rows, canonical_url, next_page_link,
                             site_host, is_supported_host, unsupported_reason,
                             HOSTS, player_url, club_squad_url,
-                            MARKET_VALUES_URL, TRANSFERS_URL)
+                            MARKET_VALUES_URL, TRANSFERS_URL, transfers_url)
 from output_writer import finish_run, dedupe_by_key, EXIT_REMOTE_API_ERROR
 import page_flow
 import env_config
@@ -325,7 +325,11 @@ def _fetch_one_page(args, page_num: int, url: str):
     read it off the live DOM."""
     attempts = max(1, args.retries + 1)
     html, upstream_status, upstream_headers = "", None, {}
-    for attempt in range(1, attempts + 1):
+    # A 5xx from the target is fetched again on top of --retries (bounded,
+    # page_flow.SERVER_ERROR_RETRIES), so even --retries 0 rides out one.
+    tries = page_flow.PageAttempts(attempts - 1, args.retry_delay)
+    for attempt_index in tries:
+        attempt = attempt_index + 1
         html, upstream_status, upstream_headers = fetch_html(args, url, args.timeout)
 
         if args.dump_html:
@@ -338,6 +342,17 @@ def _fetch_one_page(args, page_num: int, url: str):
 
         state = detect_page_state(html, status=upstream_status, url=url,
                                   headers=upstream_headers)
+        if state == "server_error":
+            if tries.again_after_server_error(page_num, upstream_status):
+                continue
+            debug_html = f"{args.out}_page{page_num}_debug.html"
+            with open(debug_html, "w", encoding="utf-8") as f:
+                f.write(html)
+            logger.error("Page %d: the site answered with a server error "
+                         "(upstream HTTP %s) after %d retries -- saved to %s. "
+                         "A page not served, not a block.", page_num,
+                         upstream_status, tries.server_retries_used, debug_html)
+            return [], None, upstream_status, html, page_flow.STOP_TARGET_HTTP_5XX
         if state == "blocked":
             # Retried like a vendor challenge, NOT returned immediately: a
             # transient upstream error (a non-2xx status, or an empty body)
@@ -433,6 +448,7 @@ def scrape(args) -> int:
     pages_completed = 0
     pages_failed: List[int] = []
     final_url = args.url
+    pages = page_flow.PageSequence()
 
     rows, blocked_by, _status, page1_html, failure = _fetch_one_page(args, 1, args.url)
     if blocked_by is not None:
@@ -449,6 +465,7 @@ def scrape(args) -> int:
         pages_completed = 1
         fresh = dedupe_by_key(rows, seen_keys, key="sku")
         all_rows.extend(fresh)
+        pages.add(1, rows, next_page_link(page1_html, args.url))
 
         addressable = True
         if args.pages > 1 and args.mode in PAGINATED_MODES:
@@ -485,7 +502,7 @@ def scrape(args) -> int:
         elif args.pages > 1:
             for page_num in range(2, args.pages + 1):
                 url = page_url(args.url, page_num)
-                page_rows, page_blocked_by, _status, _html, failure = _fetch_one_page(args, page_num, url)
+                page_rows, page_blocked_by, _status, page_html, failure = _fetch_one_page(args, page_num, url)
                 if page_blocked_by is not None:
                     stop_reason = f"blocked_{page_blocked_by}"
                     blocked = True
@@ -495,6 +512,17 @@ def scrape(args) -> int:
                     stop_reason = ("page_not_found" if failure == "not_found"
                                    else failure)
                     pages_failed.append(page_num)
+                    break
+                # A page that only repeats earlier rows is not a fresh page:
+                # the listing's end, or a page the site did not serve. Not
+                # counted as completed either way (page_flow.PageSequence).
+                repeat = pages.add(page_num, page_rows,
+                                   next_page_link(page_html, url))
+                if repeat:
+                    logger.info("Page %d: not counted — it repeated an "
+                                "earlier page (%d row(s) dropped).",
+                                page_num, len(page_rows))
+                    stop_reason = repeat["stop_reason"]
                     break
                 pages_completed += 1
                 final_url = url
@@ -531,7 +559,9 @@ def scrape(args) -> int:
                       pages_requested=args.pages, pages_completed=pages_completed,
                       pages_failed=pages_failed, mode=args.mode,
                       source=site_host(final_url) or "transfermarkt.com",
-                      start_url=args.url, final_url=final_url)
+                      start_url=args.url, final_url=final_url,
+                      extra={**pages.meta(),
+                             **page_flow.listing_filter_meta(args.mode, args.url)})
 
 
 def main() -> int:
@@ -578,6 +608,12 @@ def parse_args():
                         "the mode's own canonical URL.")
     p.add_argument("--club-id", default=None, help="Club id for --mode club-squad.")
     p.add_argument("--season", default=None, help="Season start year for --mode club-squad.")
+    p.add_argument("--min-value", type=page_flow.bounded(int, 0, "--min-value"),
+                   default=None, metavar="EUR",
+                   help="Only --mode transfers: list transfers of players valued at least "
+                        "this many EUR (0 = no floor). Without it the site's own default "
+                        "view is read, which the site filters to EUR 500,000+ "
+                        "(measured 2026-10-15).")
     p.add_argument("--player-id", default=None, help="Player id for --mode player.")
     p.add_argument("--pages", type=page_flow.bounded(int, 1, "--pages"), default=1,
                    help="Listing pages to crawl. Checked per run against "
@@ -647,6 +683,11 @@ def parse_args():
             if not args.player_id:
                 p.error("--mode player needs --player-id (or --url)")
             args.url = player_url(args.player_id)
+
+    if args.min_value is not None:
+        if args.mode != "transfers":
+            p.error("--min-value applies to --mode transfers only")
+        args.url = transfers_url(args.min_value, base_url=args.url)
 
     if not is_supported_host(args.url):
         why = unsupported_reason(args.url)

@@ -4148,6 +4148,35 @@ FIX_NGINX_404 = """<html><head><title>404 Not Found</title></head>
 </body></html>"""
 
 
+# Real captures of the latest-transfers listing, 2026-10-15 (Playwright,
+# system Chromium, no proxy). Cut to the grid's first rows, its pager, the
+# head's rel=next/prev and the grid's keys div; scripts, ads and consent
+# markup removed. Nothing else edited.
+#
+# What they show: the default view applies the site's own market-value floor
+# (its filter form and tab links carry minMarktwert=500000). That day it held
+# 20 transfers, under one 25-row page, so it had no pager and no next link,
+# and ?page=2 served page 1 again. Without the floor the same listing had
+# four pages (77 rows), and any page past the fourth served the fourth again.
+# `/statistik/neuestetransfers`, the site's default view
+FIX_TRANSFERS_ONE_PAGE_P1 = """<html lang="en"><head><title>Latest transfers | Transfermarkt</title></head><body><div class="box"><div class="grid-view" id="yw1"><div class="summary"></div><table class="items"><thead><tr><th class="" id="yw1_c0">Player</th><th class="zentriert" id="yw1_c1">Age</th><th class="zentriert" id="yw1_c2">Nat.</th><th class="" id="yw1_c3">Left</th><th class="" id="yw1_c4">Joined</th><th class="rechts" id="yw1_c5"><a class="sort-link" href="/statistik/neuestetransfers?sort=abloese.desc">Fee</a></th></tr></thead><tbody><tr class="odd"><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><img alt="Hernán López Muñoz" class="bilderrahmen-fixed lazy entered loaded" data-src="https://img.a.transfermarkt.technology/portrait/medium/665309-1740595309.jpg?lm=4711" src="https://img.a.transfermarkt.technology/portrait/medium/665309-1740595309.jpg?lm=4711" title="Hernán López Muñoz"/></td><td class="hauptlink"><a href="/hernan-lopez-munoz/profil/spieler/665309" title="Hernán López Muñoz">Hernán López Muñoz</a></td></tr><tr><td>Attacking Midfield</td></tr></tbody></table></td><td class="zentriert">26</td><td class="zentriert"><img alt="Argentina" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/9.png?lm=1791356387" title="Argentina"/></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/san-jose-earthquakes/startseite/verein/218/saison_id/2026" title="San Jose Earthquakes"><img alt="San Jose Earthquakes" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/218.png?lm=1789459176" title="San Jose Earthquakes"/></a></td><td class="hauptlink"><a href="/san-jose-earthquakes/startseite/verein/218/saison_id/2026" title="San Jose Earthquakes">SJ Earthquakes</a></td></tr><tr><td><img alt="United States" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/tiny/184.png?lm=1791356396" title="United States"/> United States </td></tr></tbody></table></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/argentinos-juniors/startseite/verein/1030/saison_id/2026" title="AA Argentinos Juniors"><img alt="AA Argentinos Juniors" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/1030.png?lm=1789459228" title="AA Argentinos Juniors"/></a></td><td class="hauptlink"><a href="/argentinos-juniors/startseite/verein/1030/saison_id/2026" title="AA Argentinos Juniors">Argentinos Jrs.</a></td></tr><tr><td><img alt="Argentina" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/9.png?lm=1791356387" title="Argentina"/> Argentina </td></tr></tbody></table></td><td class="rechts hauptlink"><a href="/jumplist/transfers/spieler/665309/transfer_id/6640068">€2.00m</a></td></tr><tr class="even"><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><img alt="Anton Tanghe" class="bilderrahmen-fixed lazy entered loaded" data-src="https://img.a.transfermarkt.technology/portrait/medium/460848-1709894210.png?lm=4711" src="https://img.a.transfermarkt.technology/portrait/medium/460848-1709894210.png?lm=4711" title="Anton Tanghe"/></td><td class="hauptlink"><a href="/anton-tanghe/profil/spieler/460848" title="Anton Tanghe">Anton Tanghe</a></td></tr><tr><td>Centre-Back</td></tr></tbody></table></td><td class="zentriert">27</td><td class="zentriert"><img alt="Belgium" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/19.png?lm=1791356387" title="Belgium"/></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/vereinslos/startseite/verein/515/saison_id/2026" title="Without ClubWithout Club"><img alt="Without Club" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/515.png?lm=1789459197" title="Without Club"/></a></td><td class="hauptlink"><a href="/vereinslos/startseite/verein/515/saison_id/2026" title="Without Club">Without Club</a></td></tr><tr><td></td></tr></tbody></table></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/fk-kauno-zalgiris/startseite/verein/40090/saison_id/2026" title="FK Kauno Žalgiris"><img alt="FK Kauno Žalgiris" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/40090.png?lm=1789461562" title="FK Kauno Žalgiris"/></a></td><td class="hauptlink"><a href="/fk-kauno-zalgiris/startseite/verein/40090/saison_id/2026" title="FK Kauno Žalgiris">Kauno Žalgiris</a></td></tr><tr><td><img alt="Lithuania" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/98.png?lm=1791356389" title="Lithuania"/> Lithuania </td></tr></tbody></table></td><td class="rechts hauptlink"><a href="/jumplist/transfers/spieler/460848/transfer_id/6633411">-</a></td></tr><tr class="odd"><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><img alt="Mark McKenzie" class="bilderrahmen-fixed lazy entered loaded" data-src="https://img.a.transfermarkt.technology/portrait/medium/429259-1714036622.png?lm=4711" src="https://img.a.transfermarkt.technology/portrait/medium/429259-1714036622.png?lm=4711" title="Mark McKenzie"/></td><td class="hauptlink"><a href="/mark-mckenzie/profil/spieler/429259" title="Mark McKenzie">Mark McKenzie</a></td></tr><tr><td>Centre-Back</td></tr></tbody></table></td><td class="zentriert">27</td><td class="zentriert"><img alt="United States" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/184.png?lm=1791356396" title="United States"/><br/><img alt="Jamaica" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/76.png?lm=1791356388" title="Jamaica"/></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/fc-toulouse/startseite/verein/415/saison_id/2026" title="FC Toulouse"><img alt="FC Toulouse" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/415.png?lm=1789459190" title="FC Toulouse"/></a></td><td class="hauptlink"><a href="/fc-toulouse/startseite/verein/415/saison_id/2026" title="FC Toulouse">Toulouse</a></td></tr><tr><td><img alt="France" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/tiny/50.png?lm=1791356388" title="France"/><a href="/ligue-1/transfers/wettbewerb/FR1/saison_id/2026" title="Ligue 1">Ligue 1</a></td></tr></tbody></table></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/philadelphia-union/startseite/verein/25467/saison_id/2026" title="Philadelphia Union"><img alt="Philadelphia Union" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/25467.png?lm=1789460517" title="Philadelphia Union"/></a></td><td class="hauptlink"><a href="/philadelphia-union/startseite/verein/25467/saison_id/2026" title="Philadelphia Union">Philadelphia</a></td></tr><tr><td><img alt="United States" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/184.png?lm=1791356396" title="United States"/> United States </td></tr></tbody></table></td><td class="rechts hauptlink"><a href="/jumplist/transfers/spieler/429259/transfer_id/6622615">?</a></td></tr></tbody></table><div class="keys" style="display:none" title="/statistik/neuestetransfers"><span>665309</span><span>460848</span><span>429259</span><span>966902</span><span>934722</span><span>623120</span><span>841340</span><span>1200419</span><span>1200419</span><span>545648</span><span>300137</span><span>848955</span><span>524590</span><span>1202459</span><span>1030744</span><span>1136529</span><span>764432</span><span>1225755</span><span>417084</span><span>599879</span></div></div></div></body></html>"""
+
+# `/statistik/neuestetransfers?page=2`, same session: page 1 again
+FIX_TRANSFERS_ONE_PAGE_P2 = """<html lang="en"><head><title>Latest transfers | Page 2 | Transfermarkt</title></head><body><div class="box"><div class="grid-view" id="yw1"><div class="summary"></div><table class="items"><thead><tr><th class="" id="yw1_c0">Player</th><th class="zentriert" id="yw1_c1">Age</th><th class="zentriert" id="yw1_c2">Nat.</th><th class="" id="yw1_c3">Left</th><th class="" id="yw1_c4">Joined</th><th class="rechts" id="yw1_c5"><a class="sort-link" href="/statistik/neuestetransfers?page=2&amp;sort=abloese.desc">Fee</a></th></tr></thead><tbody><tr class="odd"><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><img alt="Hernán López Muñoz" class="bilderrahmen-fixed lazy entered loaded" data-src="https://img.a.transfermarkt.technology/portrait/medium/665309-1740595309.jpg?lm=4711" src="https://img.a.transfermarkt.technology/portrait/medium/665309-1740595309.jpg?lm=4711" title="Hernán López Muñoz"/></td><td class="hauptlink"><a href="/hernan-lopez-munoz/profil/spieler/665309" title="Hernán López Muñoz">Hernán López Muñoz</a></td></tr><tr><td>Attacking Midfield</td></tr></tbody></table></td><td class="zentriert">26</td><td class="zentriert"><img alt="Argentina" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/9.png?lm=1791356387" title="Argentina"/></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/san-jose-earthquakes/startseite/verein/218/saison_id/2026" title="San Jose Earthquakes"><img alt="San Jose Earthquakes" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/218.png?lm=1789459176" title="San Jose Earthquakes"/></a></td><td class="hauptlink"><a href="/san-jose-earthquakes/startseite/verein/218/saison_id/2026" title="San Jose Earthquakes">SJ Earthquakes</a></td></tr><tr><td><img alt="United States" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/tiny/184.png?lm=1791356396" title="United States"/> United States </td></tr></tbody></table></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/argentinos-juniors/startseite/verein/1030/saison_id/2026" title="AA Argentinos Juniors"><img alt="AA Argentinos Juniors" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/1030.png?lm=1789459228" title="AA Argentinos Juniors"/></a></td><td class="hauptlink"><a href="/argentinos-juniors/startseite/verein/1030/saison_id/2026" title="AA Argentinos Juniors">Argentinos Jrs.</a></td></tr><tr><td><img alt="Argentina" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/9.png?lm=1791356387" title="Argentina"/> Argentina </td></tr></tbody></table></td><td class="rechts hauptlink"><a href="/jumplist/transfers/spieler/665309/transfer_id/6640068">€2.00m</a></td></tr><tr class="even"><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><img alt="Anton Tanghe" class="bilderrahmen-fixed lazy entered loaded" data-src="https://img.a.transfermarkt.technology/portrait/medium/460848-1709894210.png?lm=4711" src="https://img.a.transfermarkt.technology/portrait/medium/460848-1709894210.png?lm=4711" title="Anton Tanghe"/></td><td class="hauptlink"><a href="/anton-tanghe/profil/spieler/460848" title="Anton Tanghe">Anton Tanghe</a></td></tr><tr><td>Centre-Back</td></tr></tbody></table></td><td class="zentriert">27</td><td class="zentriert"><img alt="Belgium" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/19.png?lm=1791356387" title="Belgium"/></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/vereinslos/startseite/verein/515/saison_id/2026" title="Without ClubWithout Club"><img alt="Without Club" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/515.png?lm=1789459197" title="Without Club"/></a></td><td class="hauptlink"><a href="/vereinslos/startseite/verein/515/saison_id/2026" title="Without Club">Without Club</a></td></tr><tr><td></td></tr></tbody></table></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/fk-kauno-zalgiris/startseite/verein/40090/saison_id/2026" title="FK Kauno Žalgiris"><img alt="FK Kauno Žalgiris" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/40090.png?lm=1789461562" title="FK Kauno Žalgiris"/></a></td><td class="hauptlink"><a href="/fk-kauno-zalgiris/startseite/verein/40090/saison_id/2026" title="FK Kauno Žalgiris">Kauno Žalgiris</a></td></tr><tr><td><img alt="Lithuania" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/98.png?lm=1791356389" title="Lithuania"/> Lithuania </td></tr></tbody></table></td><td class="rechts hauptlink"><a href="/jumplist/transfers/spieler/460848/transfer_id/6633411">-</a></td></tr><tr class="odd"><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><img alt="Mark McKenzie" class="bilderrahmen-fixed lazy entered loaded" data-src="https://img.a.transfermarkt.technology/portrait/medium/429259-1714036622.png?lm=4711" src="https://img.a.transfermarkt.technology/portrait/medium/429259-1714036622.png?lm=4711" title="Mark McKenzie"/></td><td class="hauptlink"><a href="/mark-mckenzie/profil/spieler/429259" title="Mark McKenzie">Mark McKenzie</a></td></tr><tr><td>Centre-Back</td></tr></tbody></table></td><td class="zentriert">27</td><td class="zentriert"><img alt="United States" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/184.png?lm=1791356396" title="United States"/><br/><img alt="Jamaica" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/76.png?lm=1791356388" title="Jamaica"/></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/fc-toulouse/startseite/verein/415/saison_id/2026" title="FC Toulouse"><img alt="FC Toulouse" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/415.png?lm=1789459190" title="FC Toulouse"/></a></td><td class="hauptlink"><a href="/fc-toulouse/startseite/verein/415/saison_id/2026" title="FC Toulouse">Toulouse</a></td></tr><tr><td><img alt="France" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/tiny/50.png?lm=1791356388" title="France"/><a href="/ligue-1/transfers/wettbewerb/FR1/saison_id/2026" title="Ligue 1">Ligue 1</a></td></tr></tbody></table></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/philadelphia-union/startseite/verein/25467/saison_id/2026" title="Philadelphia Union"><img alt="Philadelphia Union" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/25467.png?lm=1789460517" title="Philadelphia Union"/></a></td><td class="hauptlink"><a href="/philadelphia-union/startseite/verein/25467/saison_id/2026" title="Philadelphia Union">Philadelphia</a></td></tr><tr><td><img alt="United States" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/184.png?lm=1791356396" title="United States"/> United States </td></tr></tbody></table></td><td class="rechts hauptlink"><a href="/jumplist/transfers/spieler/429259/transfer_id/6622615">?</a></td></tr></tbody></table><div class="keys" style="display:none" title="/statistik/neuestetransfers?page=2"><span>665309</span><span>460848</span><span>429259</span><span>966902</span><span>934722</span><span>623120</span><span>841340</span><span>1200419</span><span>1200419</span><span>545648</span><span>300137</span><span>848955</span><span>524590</span><span>1202459</span><span>1030744</span><span>1136529</span><span>764432</span><span>1225755</span><span>417084</span><span>599879</span></div></div></div></body></html>"""
+
+# the same listing with `minMarktwert=0`, page 1
+FIX_TRANSFERS_PAGED_P1 = """<html lang="en"><head><title>Latest transfers | Transfermarkt</title><link href="https://www.transfermarkt.com/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=2" rel="next"/></head><body><div class="box"><div class="grid-view" id="yw1"><div class="summary"></div><table class="items"><thead><tr><th class="" id="yw1_c0">Player</th><th class="zentriert" id="yw1_c1">Age</th><th class="zentriert" id="yw1_c2">Nat.</th><th class="" id="yw1_c3">Left</th><th class="" id="yw1_c4">Joined</th><th class="rechts" id="yw1_c5"><a class="sort-link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;sort=abloese.desc">Fee</a></th></tr></thead><tbody><tr class="odd"><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><img alt="Amir Musaev" class="bilderrahmen-fixed lazy entered loaded" data-src="https://img.a.transfermarkt.technology/portrait/medium/1202358-1787230089.png?lm=4711" src="https://img.a.transfermarkt.technology/portrait/medium/1202358-1787230089.png?lm=4711" title="Amir Musaev"/></td><td class="hauptlink"><a href="/amir-musaev/profil/spieler/1202358" title="Amir Musaev">Amir Musaev</a></td></tr><tr><td>Central Midfield</td></tr></tbody></table></td><td class="zentriert">18</td><td class="zentriert"><img alt="Russia" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/141.png?lm=1791356395" title="Russia"/></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/zenit-st-petersburg-ii/startseite/verein/6082/saison_id/2026" title="Zenit St. Petersburg II"><img alt="Zenit St. Petersburg II" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/6082.png?lm=1789459478" title="Zenit St. Petersburg II"/></a></td><td class="hauptlink"><a href="/zenit-st-petersburg-ii/startseite/verein/6082/saison_id/2026" title="Zenit St. Petersburg II">Zenit II</a></td></tr><tr><td><img alt="Russia" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/tiny/141.png?lm=1791356395" title="Russia"/> Russia </td></tr></tbody></table></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/zenit-st-petersburg/startseite/verein/964/saison_id/2026" title="Zenit St. Petersburg"><img alt="Zenit St. Petersburg" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/964.png?lm=1789032968" title="Zenit St. Petersburg"/></a></td><td class="hauptlink"><a href="/zenit-st-petersburg/startseite/verein/964/saison_id/2026" title="Zenit St. Petersburg">Zenit S-Pb</a></td></tr><tr><td><img alt="Russia" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/141.png?lm=1791356395" title="Russia"/><a href="/premier-liga/transfers/wettbewerb/RU1/saison_id/2026" title="Premier Liga">Premier Liga</a></td></tr></tbody></table></td><td class="rechts hauptlink"><a href="/jumplist/transfers/spieler/1202358/transfer_id/6646565">-</a></td></tr><tr class="even"><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><img alt="Ivan Yakovlev" class="bilderrahmen-fixed lazy entered loaded" data-src="https://img.a.transfermarkt.technology/portrait/medium/121524-1743513892.png?lm=4711" src="https://img.a.transfermarkt.technology/portrait/medium/121524-1743513892.png?lm=4711" title="Ivan Yakovlev"/></td><td class="hauptlink"><a href="/ivan-yakovlev/profil/spieler/121524" title="Ivan Yakovlev">Ivan Yakovlev</a></td></tr><tr><td>Centre-Forward</td></tr></tbody></table></td><td class="zentriert">33</td><td class="zentriert"><img alt="Russia" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/141.png?lm=1791356395" title="Russia"/></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/zenit-irkutsk/startseite/verein/55329/saison_id/2026" title="FC Irkutsk "><img alt="FC Irkutsk " class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/55329.png?lm=1789462680" title="FC Irkutsk "/></a></td><td class="hauptlink"><a href="/zenit-irkutsk/startseite/verein/55329/saison_id/2026" title="FC Irkutsk ">Irkutsk</a></td></tr><tr><td><img alt="Russia" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/tiny/141.png?lm=1791356395" title="Russia"/> Russia </td></tr></tbody></table></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/vereinslos/startseite/verein/515/saison_id/2026" title="Without ClubWithout Club"><img alt="Without Club" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/515.png?lm=1789459197" title="Without Club"/></a></td><td class="hauptlink"><a href="/vereinslos/startseite/verein/515/saison_id/2026" title="Without Club">Without Club</a></td></tr><tr><td></td></tr></tbody></table></td><td class="rechts hauptlink"><a href="/jumplist/transfers/spieler/121524/transfer_id/6646536">-</a></td></tr><tr class="odd"><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><img alt="Timothy Syrel" class="bilderrahmen-fixed lazy entered loaded" data-src="https://img.a.transfermarkt.technology/portrait/medium/1017960-1663499691.jpg?lm=4711" src="https://img.a.transfermarkt.technology/portrait/medium/1017960-1663499691.jpg?lm=4711" title="Timothy Syrel"/></td><td class="hauptlink"><a href="/timothy-syrel/profil/spieler/1017960" title="Timothy Syrel">Timothy Syrel</a></td></tr><tr><td>Goalkeeper</td></tr></tbody></table></td><td class="zentriert">22</td><td class="zentriert"><img alt="United States" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/184.png?lm=1791356396" title="United States"/><br/><img alt="Belarus" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/18.png?lm=1791356387" title="Belarus"/></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/bumprom-gomel/startseite/verein/80108/saison_id/2026" title="Bumprom Gomel"><img alt="Bumprom Gomel" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/80108.png?lm=1789464496" title="Bumprom Gomel"/></a></td><td class="hauptlink"><a href="/bumprom-gomel/startseite/verein/80108/saison_id/2026" title="Bumprom Gomel">Bumprom</a></td></tr><tr><td><img alt="Belarus" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/tiny/18.png?lm=1791356387" title="Belarus"/> Belarus </td></tr></tbody></table></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/vereinslos/startseite/verein/515/saison_id/2026" title="Without ClubWithout Club"><img alt="Without Club" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/515.png?lm=1789459197" title="Without Club"/></a></td><td class="hauptlink"><a href="/vereinslos/startseite/verein/515/saison_id/2026" title="Without Club">Without Club</a></td></tr><tr><td></td></tr></tbody></table></td><td class="rechts hauptlink"><a href="/jumplist/transfers/spieler/1017960/transfer_id/6646306">-</a></td></tr></tbody></table><div class="pager"><ul class="tm-pagination"><li class="tm-pagination__list-item tm-pagination__list-item--active"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000" title="Page 1">1</a></li><li class="tm-pagination__list-item"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=2" title="Page 2">2</a></li><li class="tm-pagination__list-item"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=3" title="Page 3">3</a></li><li class="tm-pagination__list-item"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=4" title="Page 4">4</a></li><li class="tm-pagination__list-item tm-pagination__list-item--icon-next-page"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=2" title="Go to the next page"></a></li><li class="tm-pagination__list-item tm-pagination__list-item--icon-last-page"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=4" title="Go to the last page (page 4)"></a></li></ul></div><div class="keys" style="display:none" title="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000"><span>1202358</span><span>121524</span><span>1017960</span><span>266582</span><span>104643</span><span>942015</span><span>665309</span><span>320373</span><span>266131</span><span>456316</span><span>193850</span><span>460848</span><span>204340</span><span>936292</span><span>85713</span><span>260183</span><span>678489</span><span>1022384</span><span>429259</span><span>1134231</span><span>966902</span><span>934722</span><span>293250</span><span>158345</span><span>1099214</span></div></div></div></body></html>"""
+
+# ...page 2
+FIX_TRANSFERS_PAGED_P2 = """<html lang="en"><head><title>Latest transfers | Page 2 | Transfermarkt</title><link href="https://www.transfermarkt.com/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000" rel="prev"/><link href="https://www.transfermarkt.com/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=3" rel="next"/></head><body><div class="box"><div class="grid-view" id="yw1"><div class="summary"></div><table class="items"><thead><tr><th class="" id="yw1_c0">Player</th><th class="zentriert" id="yw1_c1">Age</th><th class="zentriert" id="yw1_c2">Nat.</th><th class="" id="yw1_c3">Left</th><th class="" id="yw1_c4">Joined</th><th class="rechts" id="yw1_c5"><a class="sort-link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=2&amp;sort=abloese.desc">Fee</a></th></tr></thead><tbody><tr class="odd"><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><img alt="Yu Kobayashi" class="bilderrahmen-fixed lazy entered loaded" data-src="https://img.a.transfermarkt.technology/portrait/medium/138260-1770530600.JPG?lm=4711" src="https://img.a.transfermarkt.technology/portrait/medium/138260-1770530600.JPG?lm=4711" title="Yu Kobayashi"/></td><td class="hauptlink"><a href="/yu-kobayashi/profil/spieler/138260" title="Yu Kobayashi">Yu Kobayashi</a></td></tr><tr><td>Centre-Forward</td></tr></tbody></table></td><td class="zentriert">39</td><td class="zentriert"><img alt="Japan" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/77.png?lm=1791356389" title="Japan"/></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/kawasaki-frontale/startseite/verein/9598/saison_id/2026" title="Kawasaki Frontale"><img alt="Kawasaki Frontale" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/9598.png?lm=1789459668" title="Kawasaki Frontale"/></a></td><td class="hauptlink"><a href="/kawasaki-frontale/startseite/verein/9598/saison_id/2026" title="Kawasaki Frontale">Kawasaki Front.</a></td></tr><tr><td><img alt="Japan" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/tiny/77.png?lm=1791356389" title="Japan"/><a href="/j1-league/transfers/wettbewerb/JAP1/saison_id/2026" title="J1 League">J1 League</a></td></tr></tbody></table></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><img alt="Retired" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/123.png?lm=1789459175" title="Retired"/></td><td class="hauptlink"> Retired </td></tr><tr><td></td></tr></tbody></table></td><td class="rechts hauptlink"><a href="/jumplist/transfers/spieler/138260/transfer_id/6609682">-</a></td></tr><tr class="even"><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><img alt="Anders Bjørntvedt Olsen" class="bilderrahmen-fixed lazy entered loaded" data-src="https://img.a.transfermarkt.technology/portrait/medium/default.jpg?lm=4711" src="https://img.a.transfermarkt.technology/portrait/medium/default.jpg?lm=4711" title="Anders Bjørntvedt Olsen"/></td><td class="hauptlink"><a href="/anders-bjorntvedt-olsen/profil/spieler/641429" title="Anders Bjørntvedt Olsen">Anders Bjørntvedt Olsen</a></td></tr><tr><td>Right Winger</td></tr></tbody></table></td><td class="zentriert">27</td><td class="zentriert"><img alt="Norway" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/125.png?lm=1791356395" title="Norway"/></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/lyn-oslo/startseite/verein/175/saison_id/2026" title="Lyn 1896 FK"><img alt="Lyn 1896 FK" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/175.png?lm=1789459176" title="Lyn 1896 FK"/></a></td><td class="hauptlink"><a href="/lyn-oslo/startseite/verein/175/saison_id/2026" title="Lyn 1896 FK">Lyn</a></td></tr><tr><td><img alt="Norway" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/tiny/125.png?lm=1791356395" title="Norway"/> Norway </td></tr></tbody></table></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/stabaek-fotball/startseite/verein/1274/saison_id/2026" title="Stabæk Fotball"><img alt="Stabæk Fotball" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/1274.png?lm=1789459243" title="Stabæk Fotball"/></a></td><td class="hauptlink"><a href="/stabaek-fotball/startseite/verein/1274/saison_id/2026" title="Stabæk Fotball">Stabæk</a></td></tr><tr><td><img alt="Norway" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/125.png?lm=1791356395" title="Norway"/> Norway </td></tr></tbody></table></td><td class="rechts hauptlink"><a href="/jumplist/transfers/spieler/641429/transfer_id/6593365">free transfer</a></td></tr><tr class="odd"><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><img alt="Roberto Bochi" class="bilderrahmen-fixed lazy entered loaded" data-src="https://img.a.transfermarkt.technology/portrait/medium/267387-1771937498.jpg?lm=4711" src="https://img.a.transfermarkt.technology/portrait/medium/267387-1771937498.jpg?lm=4711" title="Roberto Bochi"/></td><td class="hauptlink"><a href="/roberto-bochi/profil/spieler/267387" title="Roberto Bochi">Roberto Bochi</a></td></tr><tr><td>Defensive Midfield</td></tr></tbody></table></td><td class="zentriert">39</td><td class="zentriert"><img alt="Argentina" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/9.png?lm=1791356387" title="Argentina"/><br/><img alt="Italy" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/75.png?lm=1791356388" title="Italy"/></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/club-atletico-aldosivi/startseite/verein/12301/saison_id/2026" title="CA Aldosivi"><img alt="CA Aldosivi" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/12301.png?lm=1789459800" title="CA Aldosivi"/></a></td><td class="hauptlink"><a href="/club-atletico-aldosivi/startseite/verein/12301/saison_id/2026" title="CA Aldosivi">Aldosivi</a></td></tr><tr><td><img alt="Argentina" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/tiny/9.png?lm=1791356387" title="Argentina"/> Argentina </td></tr></tbody></table></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/vereinslos/startseite/verein/515/saison_id/2026" title="Without ClubWithout Club"><img alt="Without Club" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/515.png?lm=1789459197" title="Without Club"/></a></td><td class="hauptlink"><a href="/vereinslos/startseite/verein/515/saison_id/2026" title="Without Club">Without Club</a></td></tr><tr><td></td></tr></tbody></table></td><td class="rechts hauptlink"><a href="/jumplist/transfers/spieler/267387/transfer_id/6587122">-</a></td></tr></tbody></table><div class="pager"><ul class="tm-pagination"><li class="tm-pagination__list-item tm-pagination__list-item--icon-first-page"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000" title="Go to the first page"></a></li><li class="tm-pagination__list-item tm-pagination__list-item--icon-previous-page"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000" title="Go to previous page"></a></li><li class="tm-pagination__list-item"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000" title="Page 1">1</a></li><li class="tm-pagination__list-item tm-pagination__list-item--active"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=2" title="Page 2">2</a></li><li class="tm-pagination__list-item"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=3" title="Page 3">3</a></li><li class="tm-pagination__list-item"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=4" title="Page 4">4</a></li><li class="tm-pagination__list-item tm-pagination__list-item--icon-next-page"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=3" title="Go to the next page"></a></li><li class="tm-pagination__list-item tm-pagination__list-item--icon-last-page"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=4" title="Go to the last page (page 4)"></a></li></ul></div><div class="keys" style="display:none" title="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=2"><span>138260</span><span>641429</span><span>267387</span><span>623120</span><span>1234104</span><span>841340</span><span>1402776</span><span>510407</span><span>1433420</span><span>590410</span><span>1200419</span><span>1200419</span><span>671941</span><span>545648</span><span>300137</span><span>1339498</span><span>848955</span><span>524590</span><span>1248974</span><span>1202459</span><span>665195</span><span>83895</span><span>1173829</span><span>570420</span><span>909943</span></div></div></div></body></html>"""
+
+# ...the last page (4 of 4, 2 rows; requested as ?page=399)
+FIX_TRANSFERS_PAGED_LAST = """<html lang="en"><head><title>Latest transfers | Page 399 | Transfermarkt</title><link href="https://www.transfermarkt.com/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=3" rel="prev"/></head><body><div class="box"><div class="grid-view" id="yw1"><div class="summary"></div><table class="items"><thead><tr><th class="" id="yw1_c0">Player</th><th class="zentriert" id="yw1_c1">Age</th><th class="zentriert" id="yw1_c2">Nat.</th><th class="" id="yw1_c3">Left</th><th class="" id="yw1_c4">Joined</th><th class="rechts" id="yw1_c5"><a class="sort-link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=399&amp;sort=abloese.desc">Fee</a></th></tr></thead><tbody><tr class="odd"><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><img alt="Idzham Eszuan" class="bilderrahmen-fixed lazy entered loaded" data-src="https://img.a.transfermarkt.technology/portrait/medium/1085041-1692661067.jpg?lm=4711" src="https://img.a.transfermarkt.technology/portrait/medium/1085041-1692661067.jpg?lm=4711" title="Idzham Eszuan"/></td><td class="hauptlink"><a href="/idzham-eszuan/profil/spieler/1085041" title="Idzham Eszuan">Idzham Eszuan</a></td></tr><tr><td>Centre-Back</td></tr></tbody></table></td><td class="zentriert">19</td><td class="zentriert"><img alt="Singapore" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/153.png?lm=1791356396" title="Singapore"/></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/militardienst-singapur-/startseite/verein/86984/saison_id/2026" title="Military Service (Singapore)"><img alt="Military Service (Singapore)" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/86984.png?lm=1789464995" title="Military Service (Singapore)"/></a></td><td class="hauptlink"><a href="/militardienst-singapur-/startseite/verein/86984/saison_id/2026" title="Military Service (Singapore)">Military</a></td></tr><tr><td><img alt="Singapore" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/tiny/153.png?lm=1791356396" title="Singapore"/> Singapore </td></tr></tbody></table></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/lion-city-sailors-reserve-1997-2017-/startseite/verein/33990/saison_id/2026" title="Lion City Sailors Reserves"><img alt="Lion City Sailors Reserves" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/33990.png?lm=1789468321" title="Lion City Sailors Reserves"/></a></td><td class="hauptlink"><a href="/lion-city-sailors-reserve-1997-2017-/startseite/verein/33990/saison_id/2026" title="Lion City Sailors Reserves">LС Sailors Res</a></td></tr><tr><td><img alt="Singapore" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/153.png?lm=1791356396" title="Singapore"/><a href="/singapore-premier-league-2/transfers/wettbewerb/SIN2/saison_id/2026" title="Premier League 2">Premier League 2</a></td></tr></tbody></table></td><td class="rechts hauptlink"><a href="/jumplist/transfers/spieler/1085041/transfer_id/5605112">-</a></td></tr><tr class="even"><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><img alt="Kosuke Matsumura" class="bilderrahmen-fixed lazy entered loaded" data-src="https://img.a.transfermarkt.technology/portrait/medium/default.jpg?lm=4711" src="https://img.a.transfermarkt.technology/portrait/medium/default.jpg?lm=4711" title="Kosuke Matsumura"/></td><td class="hauptlink"><a href="/kosuke-matsumura/profil/spieler/910309" title="Kosuke Matsumura">Kosuke Matsumura</a></td></tr><tr><td>Defensive Midfield</td></tr></tbody></table></td><td class="zentriert">22</td><td class="zentriert"><img alt="Japan" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/77.png?lm=1791356389" title="Japan"/></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/hosei-university/startseite/verein/23896/saison_id/2026" title="Hosei University"><img alt="Hosei University" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/23896.png?lm=1789460402" title="Hosei University"/></a></td><td class="hauptlink"><a href="/hosei-university/startseite/verein/23896/saison_id/2026" title="Hosei University">Hosei Univ.</a></td></tr><tr><td><img alt="Japan" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/tiny/77.png?lm=1791356389" title="Japan"/> Japan </td></tr></tbody></table></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/yokohama-f-marinos/startseite/verein/3828/saison_id/2026" title="Yokohama F. Marinos"><img alt="Yokohama F. Marinos" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/3828.png?lm=1789459366" title="Yokohama F. Marinos"/></a></td><td class="hauptlink"><a href="/yokohama-f-marinos/startseite/verein/3828/saison_id/2026" title="Yokohama F. Marinos">Yokohama F. M.</a></td></tr><tr><td><img alt="Japan" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/77.png?lm=1791356389" title="Japan"/><a href="/j1-league/transfers/wettbewerb/JAP1/saison_id/2026" title="J1 League">J1 League</a></td></tr></tbody></table></td><td class="rechts hauptlink"><a href="/jumplist/transfers/spieler/910309/transfer_id/5520006">free transfer</a></td></tr></tbody></table><div class="pager"><ul class="tm-pagination"><li class="tm-pagination__list-item tm-pagination__list-item--icon-first-page"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000" title="Go to the first page"></a></li><li class="tm-pagination__list-item tm-pagination__list-item--icon-previous-page"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=3" title="Go to previous page"></a></li><li class="tm-pagination__list-item"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000" title="Page 1">1</a></li><li class="tm-pagination__list-item"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=2" title="Page 2">2</a></li><li class="tm-pagination__list-item"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=3" title="Page 3">3</a></li><li class="tm-pagination__list-item tm-pagination__list-item--active"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=4" title="Page 4">4</a></li></ul></div><div class="keys" style="display:none" title="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=399"><span>1085041</span><span>910309</span></div></div></div></body></html>"""
+
+# ...?page=401: the last page again, HTTP 200
+FIX_TRANSFERS_PAGED_PAST_END = """<html lang="en"><head><title>Latest transfers | Page 401 | Transfermarkt</title><link href="https://www.transfermarkt.com/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=3" rel="prev"/></head><body><div class="box"><div class="grid-view" id="yw1"><div class="summary"></div><table class="items"><thead><tr><th class="" id="yw1_c0">Player</th><th class="zentriert" id="yw1_c1">Age</th><th class="zentriert" id="yw1_c2">Nat.</th><th class="" id="yw1_c3">Left</th><th class="" id="yw1_c4">Joined</th><th class="rechts" id="yw1_c5"><a class="sort-link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=401&amp;sort=abloese.desc">Fee</a></th></tr></thead><tbody><tr class="odd"><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><img alt="Idzham Eszuan" class="bilderrahmen-fixed lazy entered loaded" data-src="https://img.a.transfermarkt.technology/portrait/medium/1085041-1692661067.jpg?lm=4711" src="https://img.a.transfermarkt.technology/portrait/medium/1085041-1692661067.jpg?lm=4711" title="Idzham Eszuan"/></td><td class="hauptlink"><a href="/idzham-eszuan/profil/spieler/1085041" title="Idzham Eszuan">Idzham Eszuan</a></td></tr><tr><td>Centre-Back</td></tr></tbody></table></td><td class="zentriert">19</td><td class="zentriert"><img alt="Singapore" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/153.png?lm=1791356396" title="Singapore"/></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/militardienst-singapur-/startseite/verein/86984/saison_id/2026" title="Military Service (Singapore)"><img alt="Military Service (Singapore)" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/86984.png?lm=1789464995" title="Military Service (Singapore)"/></a></td><td class="hauptlink"><a href="/militardienst-singapur-/startseite/verein/86984/saison_id/2026" title="Military Service (Singapore)">Military</a></td></tr><tr><td><img alt="Singapore" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/tiny/153.png?lm=1791356396" title="Singapore"/> Singapore </td></tr></tbody></table></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/lion-city-sailors-reserve-1997-2017-/startseite/verein/33990/saison_id/2026" title="Lion City Sailors Reserves"><img alt="Lion City Sailors Reserves" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/33990.png?lm=1789461121" title="Lion City Sailors Reserves"/></a></td><td class="hauptlink"><a href="/lion-city-sailors-reserve-1997-2017-/startseite/verein/33990/saison_id/2026" title="Lion City Sailors Reserves">LС Sailors Res</a></td></tr><tr><td><img alt="Singapore" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/153.png?lm=1791356396" title="Singapore"/><a href="/singapore-premier-league-2/transfers/wettbewerb/SIN2/saison_id/2026" title="Premier League 2">Premier League 2</a></td></tr></tbody></table></td><td class="rechts hauptlink"><a href="/jumplist/transfers/spieler/1085041/transfer_id/5605112">-</a></td></tr><tr class="even"><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><img alt="Kosuke Matsumura" class="bilderrahmen-fixed lazy entered loaded" data-src="https://img.a.transfermarkt.technology/portrait/medium/default.jpg?lm=4711" src="https://img.a.transfermarkt.technology/portrait/medium/default.jpg?lm=4711" title="Kosuke Matsumura"/></td><td class="hauptlink"><a href="/kosuke-matsumura/profil/spieler/910309" title="Kosuke Matsumura">Kosuke Matsumura</a></td></tr><tr><td>Defensive Midfield</td></tr></tbody></table></td><td class="zentriert">22</td><td class="zentriert"><img alt="Japan" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/77.png?lm=1791356389" title="Japan"/></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/hosei-university/startseite/verein/23896/saison_id/2026" title="Hosei University"><img alt="Hosei University" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/23896.png?lm=1789460402" title="Hosei University"/></a></td><td class="hauptlink"><a href="/hosei-university/startseite/verein/23896/saison_id/2026" title="Hosei University">Hosei Univ.</a></td></tr><tr><td><img alt="Japan" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/tiny/77.png?lm=1791356389" title="Japan"/> Japan </td></tr></tbody></table></td><td class=""><table class="inline-table"><tbody><tr><td rowspan="2"><a href="/yokohama-f-marinos/startseite/verein/3828/saison_id/2026" title="Yokohama F. Marinos"><img alt="Yokohama F. Marinos" class="tiny_wappen" src="https://img.a.transfermarkt.technology/wappen/tiny/3828.png?lm=1789459366" title="Yokohama F. Marinos"/></a></td><td class="hauptlink"><a href="/yokohama-f-marinos/startseite/verein/3828/saison_id/2026" title="Yokohama F. Marinos">Yokohama F. M.</a></td></tr><tr><td><img alt="Japan" class="flaggenrahmen" src="https://img.a.transfermarkt.technology/flagge/verysmall/77.png?lm=1791356389" title="Japan"/><a href="/j1-league/transfers/wettbewerb/JAP1/saison_id/2026" title="J1 League">J1 League</a></td></tr></tbody></table></td><td class="rechts hauptlink"><a href="/jumplist/transfers/spieler/910309/transfer_id/5520006">free transfer</a></td></tr></tbody></table><div class="pager"><ul class="tm-pagination"><li class="tm-pagination__list-item tm-pagination__list-item--icon-first-page"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000" title="Go to the first page"></a></li><li class="tm-pagination__list-item tm-pagination__list-item--icon-previous-page"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=3" title="Go to previous page"></a></li><li class="tm-pagination__list-item"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000" title="Page 1">1</a></li><li class="tm-pagination__list-item"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=2" title="Page 2">2</a></li><li class="tm-pagination__list-item"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=3" title="Page 3">3</a></li><li class="tm-pagination__list-item tm-pagination__list-item--active"><a class="tm-pagination__link" href="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=4" title="Page 4">4</a></li></ul></div><div class="keys" style="display:none" title="/transfers/neuestetransfers/statistik?land_id=0&amp;verein_land_id=0&amp;wettbewerb_id=alle&amp;minMarktwert=0&amp;maxMarktwert=500000000&amp;page=401"><span>1085041</span><span>910309</span></div></div></div></body></html>"""
+
+
 def test_atomic_writes_and_modes():
     group("output: a failed write keeps the previous file; modes follow open()")
     ok = True
@@ -4277,15 +4306,16 @@ def test_csv_formula_escape():
 BOUNDED_FLAGS = {
     "playwright_scraper.py": {"--pages": 1, "--delay": 0, "--concurrency": 1,
                               "--retry-delay": 0, "--proxy-sessions": 1,
-                              "--proxy-block-retries": 0},
+                              "--proxy-block-retries": 0, "--min-value": 0},
     "puppeteer_scraper.py": {"--pages": 1, "--delay": 0, "--concurrency": 1,
                              "--retry-delay": 0, "--proxy-sessions": 1,
-                             "--proxy-block-retries": 0},
+                             "--proxy-block-retries": 0, "--min-value": 0},
     "selenium_scraper.py": {"--pages": 1, "--delay": 0, "--concurrency": 1,
                             "--retry-delay": 0, "--proxy-sessions": 1,
-                            "--proxy-block-retries": 0},
+                            "--proxy-block-retries": 0, "--min-value": 0},
     "scraper_api_client.py": {"--pages": 1, "--delay": 0, "--timeout": 1,
-                              "--retries": 0, "--retry-delay": 0},
+                              "--retries": 0, "--retry-delay": 0,
+                              "--min-value": 0},
 }
 # Numeric, and deliberately not a count: a score threshold.
 UNBOUNDED_NUMERIC_FLAGS = {"--min-score"}
@@ -4650,6 +4680,597 @@ def test_no_private_citations():
     return ok
 
 
+# The edge's nginx 502, exactly as saved on 2026-10-15 for page 1 of the
+# unfiltered listing, after the AWS WAF challenge had cleared (so no status
+# was left to judge it by).
+FIX_NGINX_502 = """<html><head><title>502 Bad Gateway</title></head>
+<body>
+<center><h1>502 Bad Gateway</h1></center>
+<hr><center>nginx/1.18.0</center>
+
+
+
+
+
+
+
+
+</body></html>"""
+
+
+TRANSFERS_PAGED_URL = ("https://www.transfermarkt.com/transfers/neuestetransfers/"
+                       "statistik?land_id=0&verein_land_id=0&wettbewerb_id=alle"
+                       "&minMarktwert=0&maxMarktwert=500000000")
+
+
+class _ListingPage:
+    """The bit of a Playwright page _plan_or_chain reads: the next link."""
+
+    def __init__(self):
+        self.html, self.url = "", ""
+
+    def query_selector(self, _selector):
+        from product_parser import next_page_link
+        href = next_page_link(self.html, self.url or "https://www.transfermarkt.com/")
+        if not href:
+            return None
+        return type("El", (), {"get_attribute": lambda self, _n: href})()
+
+
+class _ListingSession(_FakeSession):
+    def __init__(self, pool=None):
+        super().__init__(pool)
+        self.page = _ListingPage()
+
+    def relaunch(self):
+        return self
+
+
+def _run_listing(modname, url, pages, html_for_page, extra_argv=()):
+    """Run one entry point's real scrape() for --mode transfers with the
+    fetch replaced by real captures. Returns (rc, meta, row skus)."""
+    from product_parser import next_page_link, page_number_from_url
+    mod = importlib.import_module(modname)
+    tmp = tempfile.mkdtemp(prefix="tm_listing_")
+    out = os.path.join(tmp, "out")
+    saved = {}
+    saved_argv = sys.argv
+    # Every variable env_config reads is cleared for the run: one left behind
+    # by an earlier check (a CDP endpoint, a proxy) changes which path runs.
+    env_names = set(env_config.ENV_KEYS) | {"TWOCAPTCHA_KEY"}
+    saved_env = {k: os.environ.get(k) for k in env_names}
+
+    def patch(name, value):
+        saved[name] = getattr(mod, name)
+        setattr(mod, name, value)
+
+    try:
+        for k in env_names:
+            os.environ.pop(k, None)
+        if modname == "scraper_api_client":
+            # Its parse_args requires a key; the fetch below is stubbed, so
+            # nothing is ever sent anywhere.
+            os.environ["TWOCAPTCHA_KEY"] = "test-placeholder"
+        sys.argv = [modname + ".py", "--mode", "transfers", "--url", url,
+                    "--pages", str(pages), "--delay", "0", "--out", out,
+                    "--format", "json", "--retry-delay", "0"] + list(extra_argv)
+        args = mod.parse_args()
+        if modname == "scraper_api_client":
+            patch("fetch_html", lambda a, u, timeout:
+                  (html_for_page(page_number_from_url(u)), 200, {}))
+        else:
+            session = _ListingSession()
+
+            def fake_fetch(sess, a, pool, page_num, u):
+                html = html_for_page(page_number_from_url(u))
+                if hasattr(sess, "page"):
+                    sess.page.html, sess.page.url = html, u
+                session.page.html, session.page.url = html, u
+                oc = mod.PageOutcome(page_num=page_num, url=u, final_url=u,
+                                     state="content")
+                oc.rows = parse_transfers(html, u, page_num=page_num)
+                oc.next_url = next_page_link(html, u)
+                return oc
+
+            patch("_fetch_one_page", fake_fetch)
+            if modname == "playwright_scraper":
+                patch("sync_playwright", lambda: _FakePlaywright())
+                patch("_BrowserSession", lambda pw, a, pool, **kw: session)
+            else:
+                patch("_Session", lambda *a, **kw: session)
+                patch("_next_page_href", lambda sess: next_page_link(
+                    session.page.html, session.page.url))
+                if modname == "puppeteer_scraper":
+                    patch("_AsyncBridge", lambda: type(
+                        "B", (), {"close": lambda self: None})())
+        rc = mod.scrape(args)
+    finally:
+        for name, value in saved.items():
+            setattr(mod, name, value)
+        sys.argv = saved_argv
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    meta = {}
+    if os.path.exists(out + ".meta.json"):
+        meta = json.load(open(out + ".meta.json", encoding="utf-8"))
+    skus = []
+    if os.path.exists(out + ".json"):
+        skus = [r["sku"] for r in json.load(open(out + ".json", encoding="utf-8"))]
+    shutil.rmtree(tmp, ignore_errors=True)
+    return rc, meta, skus
+
+
+def test_listing_end_and_repeated_pages(skips):
+    group("latest transfers: a page that repeats an earlier one (real captures, 2026-10-15)")
+    from product_parser import next_page_link
+    ok = True
+
+    # The captures themselves.
+    one1 = parse_transfers(FIX_TRANSFERS_ONE_PAGE_P1, TRANSFERS_URL)
+    one2 = parse_transfers(FIX_TRANSFERS_ONE_PAGE_P2, TRANSFERS_URL + "?page=2", page_num=2)
+    ok &= check("default view: the rows read with their values",
+                [(r.sku, r.title, r.player_id, r.age) for r in one1] == [
+                    ("6640068", "Hernán López Muñoz", "665309", 26),
+                    ("6633411", "Anton Tanghe", "460848", 27),
+                    ("6622615", "Mark McKenzie", "429259", 27)])
+    ok &= check("default view: the disclosed fee is EUR 2,000,000",
+                (one1[0].price, one1[0].currency, one1[0].fee_type)
+                == (2000000.0, "EUR", "disclosed"))
+    ok &= check("default view: an undisclosed fee stays null",
+                (one1[2].price, one1[2].fee_type) == (None, "undisclosed"))
+    ok &= check("default view: no next link on page 1",
+                next_page_link(FIX_TRANSFERS_ONE_PAGE_P1, TRANSFERS_URL) is None)
+    ok &= check("default view: ?page=2 served page 1's rows again",
+                [r.sku for r in one2] == [r.sku for r in one1])
+    p1 = parse_transfers(FIX_TRANSFERS_PAGED_P1, TRANSFERS_PAGED_URL)
+    p2 = parse_transfers(FIX_TRANSFERS_PAGED_P2, TRANSFERS_PAGED_URL, page_num=2)
+    last = parse_transfers(FIX_TRANSFERS_PAGED_LAST, TRANSFERS_PAGED_URL, page_num=4)
+    ok &= check("unfiltered view: page 1's next link is ?page=2 with the filters kept",
+                next_page_link(FIX_TRANSFERS_PAGED_P1, TRANSFERS_PAGED_URL)
+                == TRANSFERS_PAGED_URL + "&page=2")
+    ok &= check("unfiltered view: page 1 and page 2 share no transfer id",
+                not {r.sku for r in p1} & {r.sku for r in p2}
+                and [r.sku for r in p2] == ["6609682", "6593365", "6587122"])
+    ok &= check("unfiltered view: the constructed ?page=2 matches the site's own link",
+                page_flow.pagination_is_addressable(
+                    "transfers", TRANSFERS_PAGED_URL,
+                    next_page_link(FIX_TRANSFERS_PAGED_P1, TRANSFERS_PAGED_URL)))
+    ok &= check("unfiltered view: the last page has no next link",
+                next_page_link(FIX_TRANSFERS_PAGED_LAST, TRANSFERS_PAGED_URL) is None
+                and [r.sku for r in last] == ["5605112", "5520006"])
+
+    # The rule, on its own.
+    seq = page_flow.PageSequence()
+    seq.add(1, one1, None)
+    verdict = seq.add(2, one2, None)
+    ok &= check("page 2 repeating a page with no next link ends the listing",
+                verdict and verdict["stop_reason"] == page_flow.STOP_LISTING_ENDED
+                and verdict["same_as"] == 1)
+    ok &= check("the repeated page is not counted",
+                seq.counts(1) and not seq.counts(2) and not seq.counts(3))
+    ok &= check("the sidecar says which page repeated which",
+                seq.meta() == {"repeated_page": 2, "repeat_of_page": 1,
+                               "listing_pages": 1})
+    seq = page_flow.PageSequence()
+    seq.add(1, p1, "next")
+    verdict = seq.add(2, p1, None)
+    ok &= check("a repeat after a page that linked onward is a page not served",
+                verdict and verdict["stop_reason"] == page_flow.STOP_PAGE_REPEATED)
+    ok &= check("page_repeated is not complete; listing_ended is",
+                page_flow.STOP_PAGE_REPEATED not in COMPLETE_STOP_REASONS
+                and page_flow.STOP_LISTING_ENDED in COMPLETE_STOP_REASONS)
+    seq = page_flow.PageSequence()
+    seq.add(1, p1, "next")
+    ok &= check("a page with new rows is not a repeat", seq.add(2, p2, "next") is None)
+    ok &= check("an empty page is not a repeat (the empty-page stop handles it)",
+                seq.add(3, [], None) is None)
+
+    # A bare nginx 5xx is a page not served, with or without its status.
+    from product_parser import detect_page_state, is_gateway_error_page
+    ok &= check("the edge's 502 page, with no status, is a server error, not an empty page",
+                detect_page_state(FIX_NGINX_502) == "server_error")
+    ok &= check("...and classifies the same with its status",
+                detect_page_state(FIX_NGINX_502, status=502) == "server_error")
+    ok &= check("the 502 marker matches none of the served or 404 captures",
+                not any(is_gateway_error_page(h) for h in (
+                    FIX_TRANSFERS_ONE_PAGE_P1, FIX_TRANSFERS_PAGED_P1,
+                    FIX_TRANSFERS_PAGED_LAST, FIX_MARKET_VALUES, FIX_CLUB_SQUAD,
+                    FIX_TRANSFERS, FIX_PLAYER_DETAIL, FIX_NOT_FOUND,
+                    FIX_NGINX_404, FIX_AWS_WAF_CHALLENGE)))
+    gateway_first = lambda n: FIX_NGINX_502 if n == 1 else FIX_TRANSFERS_PAGED_P2
+    rc, meta, skus = _run_listing("scraper_api_client", TRANSFERS_PAGED_URL, 2,
+                                  gateway_first)
+    ok &= check("a 502 for page 1 is exit 5, not blocked and not complete (got rc=%s)"
+                % rc, rc == 5 and meta.get("status") != "complete")
+
+    # The runs below replace each engine's _fetch_one_page, so whether the
+    # real one records the page's next link is checked on its source.
+    for name in ENGINE_FILES:
+        tree = ast.parse(open(os.path.join(REPO_ROOT, name), encoding="utf-8").read())
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                  and n.name == "_fetch_one_page")
+        sets_next = any(
+            isinstance(n, ast.Assign)
+            and ast.unparse(n.targets[0]) == "outcome.next_url"
+            and isinstance(n.value, ast.Call)
+            and ast.unparse(n.value.func) == "next_page_link"
+            for n in ast.walk(fn))
+        ok &= check("%s: _fetch_one_page records the served page's next link"
+                    % name, sets_next)
+
+    # Each entry point, through its real scrape(), fed the captures.
+    one_page = lambda n: FIX_TRANSFERS_ONE_PAGE_P1 if n == 1 else FIX_TRANSFERS_ONE_PAGE_P2
+    paged = {1: FIX_TRANSFERS_PAGED_P1, 2: FIX_TRANSFERS_PAGED_P2,
+             3: FIX_TRANSFERS_PAGED_LAST}
+    four = lambda n: paged.get(n, FIX_TRANSFERS_PAGED_PAST_END)
+    planted = lambda n: FIX_TRANSFERS_PAGED_P1
+    want_paged = ([r.sku for r in p1] + [r.sku for r in p2] + [r.sku for r in last])
+    runs = [(m, ()) for m in ("scraper_api_client", "playwright_scraper",
+                              "puppeteer_scraper", "selenium_scraper")]
+    runs.append(("playwright_scraper", ("--concurrency", "3")))
+    for modname, extra in runs:
+        label = modname + (" --concurrency 3" if extra else "")
+        try:
+            rc, meta, skus = _run_listing(modname, TRANSFERS_URL, 3, one_page, extra)
+        except ImportError as e:
+            skips.append("%s repeated-page run (%s)" % (label, e))
+            continue
+        ok &= check("%s: one-page listing, --pages 3 -> exit 0, listing_ended, "
+                    "1 page counted, 3 rows (got rc=%s %s %s %s)"
+                    % (label, rc, meta.get("stop_reason"), meta.get("pages_completed"), len(skus)),
+                    rc == 0 and meta.get("status") == "complete"
+                    and meta.get("stop_reason") == "listing_ended"
+                    and meta.get("pages_completed") == 1
+                    and meta.get("repeated_page") == 2 and meta.get("repeat_of_page") == 1
+                    and skus == [r.sku for r in one1])
+        rc, meta, skus = _run_listing(modname, TRANSFERS_PAGED_URL, 6, four, extra)
+        ok &= check("%s: 3-page listing, --pages 6 -> exit 0, 3 pages counted, "
+                    "8 rows in page order, page 4 recorded as a repeat of 3 "
+                    "(got rc=%s %s %s %s)"
+                    % (label, rc, meta.get("stop_reason"), meta.get("pages_completed"), skus),
+                    rc == 0 and meta.get("stop_reason") == "listing_ended"
+                    and meta.get("pages_completed") == 3
+                    and meta.get("repeated_page") == 4 and meta.get("repeat_of_page") == 3
+                    and skus == want_paged)
+        rc, meta, skus = _run_listing(modname, TRANSFERS_PAGED_URL, 3, planted, extra)
+        ok &= check("%s: page 1 links to page 2 but page 2 serves page 1 -> "
+                    "exit 6, page_repeated, partial (got rc=%s %s %s)"
+                    % (label, rc, meta.get("stop_reason"), meta.get("status")),
+                    rc == 6 and meta.get("stop_reason") == "page_repeated"
+                    and meta.get("status") == "partial"
+                    and meta.get("pages_completed") == 1 and skus == [r.sku for r in p1])
+    return ok
+
+
+class _Site:
+    """Answers each URL from a per-page script of (status, html) replies; the
+    last reply repeats. Counts the requests per page."""
+
+    def __init__(self, script):
+        self.script = script          # {page_num: [(status, html), ...]}
+        self.hits = {}
+
+    def serve(self, url):
+        from product_parser import page_number_from_url
+        n = page_number_from_url(url) or 1
+        replies = self.script[n]
+        i = self.hits.get(n, 0)
+        self.hits[n] = i + 1
+        return replies[min(i, len(replies) - 1)]
+
+
+def _select(html, selector):
+    from bs4 import BeautifulSoup
+    return BeautifulSoup(html or "", "html.parser").select(selector)
+
+
+class _PWPage:
+    def __init__(self, site):
+        self.site, self.url, self.html = site, "about:blank", ""
+
+    def goto(self, url, **_kw):
+        status, self.html = self.site.serve(url)
+        self.url = url
+        return type("Resp", (), {"status": status, "headers": {}})()
+
+    def content(self):
+        return self.html
+
+    def query_selector_all(self, selector):
+        return _select(self.html, selector)
+
+    def query_selector(self, selector):
+        found = _select(self.html, selector)
+        if not found:
+            return None
+        href = found[0].get("href")
+        return type("El", (), {"get_attribute": lambda self, _n: href})()
+
+    def evaluate(self, _js):
+        return None
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+    def screenshot(self, **_kw):
+        pass
+
+
+class _PupPage(_PWPage):
+    async def goto(self, url, *_a, **_kw):
+        return _PWPage.goto(self, url)
+
+    async def content(self):
+        return self.html
+
+    async def querySelectorAll(self, selector):
+        return _select(self.html, selector)
+
+    async def evaluate(self, *_a, **_kw):
+        return None
+
+    async def screenshot(self, *_a, **_kw):
+        return None
+
+
+class _SelDriver:
+    def __init__(self, site):
+        self.site, self.current_url, self.page_source = site, "about:blank", ""
+
+    def get(self, url):
+        _status, self.page_source = self.site.serve(url)
+        self.current_url = url
+
+    def find_elements(self, _by, selector):
+        return _select(self.page_source, selector)
+
+    def execute_script(self, *_a):
+        return None
+
+    def save_screenshot(self, *_a):
+        return True
+
+
+class _Bridge:
+    def run(self, coro, timeout=None):
+        import asyncio
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def close(self):
+        pass
+
+
+def _run_site(modname, url, pages, site, extra_argv=()):
+    """One entry point's real scrape() and real _fetch_one_page against a
+    scripted site; only the browser (or the Scraper API call) is replaced.
+    Returns (rc, meta)."""
+    mod = importlib.import_module(modname)
+    tmp = tempfile.mkdtemp(prefix="tm_site_")
+    out = os.path.join(tmp, "out")
+    saved, saved_argv = {}, sys.argv
+    env_names = set(env_config.ENV_KEYS) | {"TWOCAPTCHA_KEY"}
+    saved_env = {k: os.environ.get(k) for k in env_names}
+
+    def patch(name, value):
+        saved[name] = getattr(mod, name)
+        setattr(mod, name, value)
+
+    class Session:
+        pool = None
+
+        def open(self):
+            return self
+
+        def close(self):
+            pass
+
+        def relaunch(self):
+            return self
+
+    session = Session()
+    try:
+        for k in env_names:
+            os.environ.pop(k, None)
+        if modname == "scraper_api_client":
+            os.environ["TWOCAPTCHA_KEY"] = "test-placeholder"
+        sys.argv = [modname + ".py", "--mode", "transfers", "--url", url,
+                    "--pages", str(pages), "--delay", "0", "--retry-delay", "0",
+                    "--out", out, "--format", "json", "--allow-empty"] + list(extra_argv)
+        args = mod.parse_args()
+        if modname == "scraper_api_client":
+            def fetch(a, u, timeout):
+                status, html = site.serve(u)
+                return html, status, {}
+            patch("fetch_html", fetch)
+        elif modname == "playwright_scraper":
+            session.page = _PWPage(site)
+            patch("sync_playwright", lambda: _FakePlaywright())
+            patch("_BrowserSession", lambda pw, a, pool, **kw: session)
+        elif modname == "puppeteer_scraper":
+            session.page, session.bridge = _PupPage(site), _Bridge()
+            patch("_AsyncBridge", lambda: session.bridge)
+            patch("_Session", lambda *a, **kw: session)
+        else:
+            session.driver = _SelDriver(site)
+            patch("_Session", lambda *a, **kw: session)
+        rc = mod.scrape(args)
+    finally:
+        for name, value in saved.items():
+            setattr(mod, name, value)
+        sys.argv = saved_argv
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    meta = {}
+    if os.path.exists(out + ".meta.json"):
+        meta = json.load(open(out + ".meta.json", encoding="utf-8"))
+    shutil.rmtree(tmp, ignore_errors=True)
+    return rc, meta
+
+
+def test_target_5xx_is_a_server_error(skips):
+    group("a 5xx from the site is a server error: retried, then failed, never blocked")
+    from product_parser import detect_page_state
+    ok = True
+    ok &= check("HTTP 500 with an ordinary error body is a server error",
+                detect_page_state("<html><body>Internal error</body></html>",
+                                  status=500) == "server_error")
+    ok &= check("a 5xx that carries a vendor challenge is still not a server error",
+                detect_page_state(FIX_AWS_WAF_CHALLENGE, status=503) != "server_error")
+    ok &= check("a 403 stays a refusal",
+                detect_page_state("<html><body>Forbidden</body></html>",
+                                  status=403) == "blocked")
+    ok &= check("server_error is neither blocked, rotated past nor paid for",
+                not page_flow.counts_as_blocked("server_error")
+                and not page_flow.should_retry("server_error")
+                and not page_flow.should_solve("server_error"))
+
+    slept = []
+    tries = page_flow.PageAttempts(0, 1.5, sleep=slept.append)
+    seen = []
+    for i in tries:
+        seen.append(i)
+        if not tries.again_after_server_error(1, 502):
+            break
+    ok &= check("PageAttempts: 2 same-exit retries, then stops (yielded %s)" % seen,
+                seen == [0, 0, 0] and tries.server_retries_used == 2)
+    ok &= check("PageAttempts: backoff is --retry-delay x1, x2 (%s)" % slept,
+                slept == [1.5, 3.0])
+    tries = page_flow.PageAttempts(2, 0)
+    ok &= check("PageAttempts: without a retry it is range(block_retries + 1)",
+                list(tries) == [0, 1, 2])
+
+    e502 = (502, FIX_NGINX_502)
+    p1, p2 = (200, FIX_TRANSFERS_PAGED_P1), (200, FIX_TRANSFERS_PAGED_P2)
+    for modname in ("scraper_api_client", "playwright_scraper",
+                    "puppeteer_scraper", "selenium_scraper"):
+        try:
+            importlib.import_module(modname)
+        except ImportError as e:
+            skips.append("%s 5xx run (%s)" % (modname, e))
+            continue
+        site = _Site({1: [e502, e502, p1], 2: [p2]})
+        rc, meta = _run_site(modname, TRANSFERS_PAGED_URL, 2, site)
+        ok &= check("%s: two 502s, then served -> exit 0, page 1 fetched 3 times "
+                    "(got rc=%s hits=%s)" % (modname, rc, site.hits),
+                    rc == 0 and site.hits.get(1) == 3
+                    and meta.get("pages_completed") == 2 and meta.get("products") == 6)
+        site = _Site({1: [e502]})
+        rc, meta = _run_site(modname, TRANSFERS_PAGED_URL, 2, site)
+        ok &= check("%s: page 1 a 502 every time -> exit 5, target_http_5xx, "
+                    "3 fetches, never exit 3 (got rc=%s %s hits=%s)"
+                    % (modname, rc, meta.get("stop_reason"), site.hits),
+                    rc == 5 and meta.get("stop_reason") == "target_http_5xx"
+                    and site.hits.get(1) == 3 and meta.get("status") != "complete")
+        site = _Site({1: [p1], 2: [e502]})
+        rc, meta = _run_site(modname, TRANSFERS_PAGED_URL, 2, site)
+        ok &= check("%s: page 2 a 502 every time -> exit 6, target_http_5xx, "
+                    "page 2 failed (got rc=%s %s %s)"
+                    % (modname, rc, meta.get("stop_reason"), meta.get("pages_failed")),
+                    rc == 6 and meta.get("stop_reason") == "target_http_5xx"
+                    and meta.get("pages_failed") == [2] and site.hits.get(2) == 3)
+    return ok
+
+
+def test_min_value_flag(skips):
+    group("--min-value: the latest-transfers market-value floor")
+    from product_parser import transfers_url, min_value_of
+    ok = True
+    ok &= check("--min-value 0 builds the unfiltered listing URL measured 2026-10-15",
+                transfers_url(0) == TRANSFERS_PAGED_URL)
+    kept = transfers_url(250000, base_url=TRANSFERS_PAGED_URL.replace(
+        "wettbewerb_id=alle", "wettbewerb_id=GB1") + "&page=3")
+    ok &= check("a typed URL's own filters are kept, its page dropped (%s)" % kept,
+                "wettbewerb_id=GB1" in kept and "minMarktwert=250000" in kept
+                and "page=" not in kept)
+    ok &= check("min_value_of reads the floor, None for the default view",
+                min_value_of(TRANSFERS_PAGED_URL) == 0
+                and min_value_of(TRANSFERS_URL) is None)
+    ok &= check("the sidecar names the floor, or the site's default view",
+                page_flow.listing_filter_meta("transfers", TRANSFERS_PAGED_URL)
+                == {"min_market_value_eur": 0, "market_value_filter": "url"}
+                and page_flow.listing_filter_meta("transfers", TRANSFERS_URL)
+                == {"min_market_value_eur": None, "market_value_filter": "site_default"}
+                and page_flow.listing_filter_meta("market-values", MARKET_VALUES_URL) == {})
+
+    saved_argv = sys.argv
+    env_names = set(env_config.ENV_KEYS) | {"TWOCAPTCHA_KEY"}
+    saved_env = {k: os.environ.get(k) for k in env_names}
+    try:
+        for k in env_names:
+            os.environ.pop(k, None)
+        os.environ["TWOCAPTCHA_KEY"] = "test-placeholder"
+        for modname in ("scraper_api_client", "playwright_scraper",
+                        "puppeteer_scraper", "selenium_scraper"):
+            try:
+                mod = importlib.import_module(modname)
+            except ImportError as e:
+                skips.append("%s --min-value parse_args (%s)" % (modname, e))
+                continue
+            for argv, want in ((["--mode", "transfers"], TRANSFERS_URL),
+                               (["--mode", "transfers", "--min-value", "0"],
+                                TRANSFERS_PAGED_URL),
+                               (["--mode", "transfers", "--min-value", "500000"],
+                                TRANSFERS_PAGED_URL.replace("minMarktwert=0",
+                                                            "minMarktwert=500000"))):
+                sys.argv = [modname + ".py"] + argv
+                ok &= check("%s %s -> %s" % (modname, " ".join(argv), want),
+                            mod.parse_args().url == want)
+            for argv in (["--mode", "transfers", "--min-value", "-1"],
+                         ["--mode", "transfers", "--min-value", "x"],
+                         ["--mode", "market-values", "--min-value", "0"]):
+                sys.argv = [modname + ".py"] + argv
+                code = None
+                try:
+                    with open(os.devnull, "w") as devnull:
+                        saved_err, sys.stderr = sys.stderr, devnull
+                        try:
+                            mod.parse_args()
+                        finally:
+                            sys.stderr = saved_err
+                except SystemExit as e:
+                    code = e.code
+                ok &= check("%s %s -> exit 2" % (modname, " ".join(argv)), code == 2)
+    finally:
+        sys.argv = saved_argv
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    for modname in ("scraper_api_client", "selenium_scraper"):
+        try:
+            importlib.import_module(modname)
+        except ImportError as e:
+            skips.append("%s --min-value run (%s)" % (modname, e))
+            continue
+        paged = {1: FIX_TRANSFERS_PAGED_P1, 2: FIX_TRANSFERS_PAGED_P2}
+        rc, meta, skus = _run_listing(modname, TRANSFERS_URL, 2,
+                                      lambda n: paged[n], ("--min-value", "0"))
+        ok &= check("%s --min-value 0: the sidecar records min_market_value_eur 0 "
+                    "and the run reads the filtered path (got %s)"
+                    % (modname, meta.get("start_url")),
+                    rc == 0 and meta.get("min_market_value_eur") == 0
+                    and meta.get("market_value_filter") == "url"
+                    and meta.get("start_url") == TRANSFERS_PAGED_URL and len(skus) == 6)
+        rc, meta, skus = _run_listing(modname, TRANSFERS_URL, 1,
+                                      lambda n: FIX_TRANSFERS_ONE_PAGE_P1)
+        ok &= check("%s without --min-value: the sidecar says site_default" % modname,
+                    rc == 0 and meta.get("min_market_value_eur") is None
+                    and meta.get("market_value_filter") == "site_default")
+    return ok
+
+
 def main() -> int:
     ok = True
     # Checks that could not run because an optional engine library is absent.
@@ -4712,6 +5333,9 @@ def main() -> int:
     ok &= test_solve_budget_is_per_page()
     ok &= test_credential_scan_judges_paths_inside_the_repo()
     ok &= test_no_private_citations()
+    ok &= test_listing_end_and_repeated_pages(skips)
+    ok &= test_target_5xx_is_a_server_error(skips)
+    ok &= test_min_value_flag(skips)
 
     print()
     if _failures:

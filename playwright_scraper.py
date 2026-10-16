@@ -84,9 +84,10 @@ from captcha_solver import (detect_recaptcha_v3, detect_recaptcha_in_page,
 from product_parser import (parse_market_values, parse_club_squad,
                             parse_transfers, parse_player_detail,
                             detect_bot_challenge, page_states_rows, page_url,
+                            next_page_link,
                             site_host, is_supported_host, unsupported_reason,
                             HOSTS, player_url, club_squad_url,
-                            MARKET_VALUES_URL, TRANSFERS_URL)
+                            MARKET_VALUES_URL, TRANSFERS_URL, transfers_url)
 from output_writer import dedupe_by_key, finish_run, RemoteAPIError, EXIT_REMOTE_API_ERROR
 import page_flow
 from proxy_pool import (from_args as proxy_pool_from_args, to_playwright, mask,
@@ -125,6 +126,12 @@ class PageOutcome:
     # A served page that shows rows the parser could not read: a markup
     # change, never an empty listing (page_flow.STOP_PARSER_FOUND_NOTHING).
     parse_failed: bool = False
+    # The served page's own next-page link (None when it has none):
+    # decides whether a repeated page is the listing's end or a page
+    # lost (page_flow.PageSequence).
+    next_url: Optional[str] = None
+    # The target answered 5xx on every try (page_flow.STOP_TARGET_HTTP_5XX).
+    server_error: bool = False
 
     @property
     def ok(self) -> bool:
@@ -132,7 +139,8 @@ class PageOutcome:
         # page it is a page the run did not get.
         lost = self.state == "not_found" and self.page_num > 1
         return (not self.load_failed and self.blocked_by is None
-                and not self.parse_failed and not lost)
+                and not self.parse_failed and not self.server_error
+                and not lost)
 
 
 def _driver(page):
@@ -544,7 +552,10 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
     # to debug from. "Fail loudly" means saying WHAT failed.
     last_error, attempts_made = None, 0
 
-    for block_attempt in range(block_retries + 1):
+    # A 5xx is fetched again on the same exit (bounded); a block moves on
+    # to the next exit. Both under the one budget above.
+    tries = page_flow.PageAttempts(block_retries, args.retry_delay)
+    for block_attempt in tries:
         logger.info("Fetching page %d: %s", page_num, url)
         load_failed, exit_failed = False, None
         resp_status, resp_headers = None, None
@@ -621,6 +632,9 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         state = _classify(session.page, html, status=resp_status,
                           headers=resp_headers)
 
+        if state == "server_error" and tries.again_after_server_error(
+                page_num, resp_status):
+            continue
         if not page_flow.should_retry(state):
             break
 
@@ -650,6 +664,21 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         logger.error("Page %d: the site says %s does not exist (now at %s). "
                      "Check --club-id / --player-id / --url.", page_num, url,
                      session.page.url)
+        outcome.final_url = session.page.url
+        return outcome
+
+    if state == "server_error":
+        # The target's own 5xx, still there after the same-exit retries:
+        # a page not served. Not a block (exit 3) and not an empty page.
+        debug_html = f"{args.out}_page{page_num}_debug.html"
+        with open(debug_html, "w", encoding="utf-8") as f:
+            f.write(html or "")
+        logger.error("Page %d: the site answered with a server error "
+                     "after %d retr%s — saved to %s.", page_num,
+                     tries.server_retries_used,
+                     "y" if tries.server_retries_used == 1 else "ies",
+                     debug_html)
+        outcome.server_error = True
         outcome.final_url = session.page.url
         return outcome
 
@@ -752,6 +781,7 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
 
     outcome.rows = rows
     outcome.final_url = session.page.url
+    outcome.next_url = next_page_link(html, outcome.final_url)
     return outcome
 
 
@@ -763,10 +793,15 @@ def _worker_pool(pool, worker_index: int):
     return ProxyPool(proxies[offset:] + proxies[:offset], rotate="per-run")
 
 
-def _fetch_pages_concurrently(args, pool, specs, concurrency: int):
+def _fetch_pages_concurrently(args, pool, specs, concurrency: int,
+                              known_keys=None):
     """Fetch `specs` [(page_num, url), ...] across `concurrency` workers.
 
     Only reached for --mode transfers — see CONCURRENCY_CAPABLE_MODES.
+    `known_keys` (page 1's row keys) lets a worker stop dispatch once a page
+    serves nothing new — the site answers a page past the end with an
+    earlier page. Which page that was, and what it means, is decided
+    afterwards in page order (page_flow.settle_repeats), not here.
     """
     work = queue.Queue()
     for spec in specs:
@@ -775,6 +810,7 @@ def _fetch_pages_concurrently(args, pool, specs, concurrency: int):
     results = []
     results_lock = threading.Lock()
     exhausted = threading.Event()
+    seen_keys = set(known_keys or ())
 
     def worker(index: int):
         name = f"worker-{index + 1}"
@@ -795,7 +831,17 @@ def _fetch_pages_concurrently(args, pool, specs, concurrency: int):
                                                   page_num, url)
                         with results_lock:
                             results.append(outcome)
-                        if outcome.ok and not outcome.rows:
+                            keys = [getattr(r, "sku", None) for r in outcome.rows]
+                            repeats = bool(outcome.ok and keys and all(
+                                k is not None and k in seen_keys for k in keys))
+                            if outcome.ok:
+                                seen_keys.update(k for k in keys if k is not None)
+                        if repeats:
+                            logger.info("[%s] page %d served only rows "
+                                        "already seen — not dispatching "
+                                        "further pages.", name, page_num)
+                            exhausted.set()
+                        elif outcome.ok and not outcome.rows:
                             logger.info("[%s] page %d returned no rows — "
                                         "treating that as the end of the "
                                         "listing.", name, page_num)
@@ -851,6 +897,7 @@ def _plan_or_chain(session, args, first_outcome):
 def scrape(args) -> int:
     outcomes: List[PageOutcome] = []
     seen_keys = set()
+    pages = page_flow.PageSequence()
     blocked = False
     stop_reason = "single_page_mode" if args.mode not in PAGINATED_MODES else "completed"
 
@@ -900,6 +947,7 @@ def scrape(args) -> int:
                 pass
             else:
                 seen_keys.update(r.sku for r in first.rows if r.sku is not None)
+                pages.add(1, first.rows, first.next_url)
                 planned = _plan_or_chain(session, args, first)
 
                 if args.pages > 1 and concurrency > 1 and planned is None:
@@ -916,14 +964,19 @@ def scrape(args) -> int:
                                 args.pages, concurrency,
                                 f" over {len(pool)} exit(s)" if pool else "")
                     rest, unattempted, exhausted = _fetch_pages_concurrently(
-                        args, pool, specs, concurrency)
+                        args, pool, specs, concurrency,
+                        known_keys=[r.sku for r in first.rows])
                     outcomes.extend(rest)
+                    pages = page_flow.settle_repeats(outcomes)
 
-                    failed = [o for o in rest if not o.ok]
+                    failed = [o for o in rest
+                              if not o.ok and pages.counts(o.page_num)]
                     if failed:
                         worst = min(failed, key=lambda o: o.page_num)
                         stop_reason = page_flow.failure_reason(worst)
-                        blocked = any(o.blocked_by for o in rest)
+                        blocked = any(o.blocked_by for o in failed)
+                    elif pages.repeat:
+                        stop_reason = pages.repeat["stop_reason"]
                     elif exhausted:
                         stop_reason = "no_new_products"
                     elif unattempted:
@@ -954,6 +1007,12 @@ def scrape(args) -> int:
                             blocked = outcome.blocked_by is not None
                             break
 
+                        # A page that only repeats earlier rows is not a fresh page:
+                        # the listing's end, or a page the site did not serve.
+                        repeat = pages.add(page_num, outcome.rows, outcome.next_url)
+                        if repeat:
+                            stop_reason = repeat["stop_reason"]
+                            break
                         fresh_count = sum(1 for r in outcome.rows
                                           if r.sku is None or r.sku not in seen_keys)
                         seen_keys.update(r.sku for r in outcome.rows
@@ -984,15 +1043,20 @@ def scrape(args) -> int:
 
     all_rows = []
     merged_seen = set()
+    counted = [o for o in outcomes if pages.counts(o.page_num)]
     for oc in sorted(outcomes, key=lambda o: o.page_num):
+        if not pages.counts(oc.page_num):
+            logger.info("Page %d: not counted — it repeated an earlier "
+                        "page (%d row(s) dropped).", oc.page_num, len(oc.rows))
+            continue
         fresh = dedupe_by_key(oc.rows, merged_seen, key="sku")
         if len(fresh) < len(oc.rows):
             logger.info("Page %d: dropped %d duplicate row(s).",
                         oc.page_num, len(oc.rows) - len(fresh))
         all_rows.extend(fresh)
 
-    ok_pages = [o for o in outcomes if o.ok]
-    failed_pages = [o.page_num for o in outcomes if not o.ok]
+    ok_pages = [o for o in counted if o.ok]
+    failed_pages = [o.page_num for o in counted if not o.ok]
     final_url = (max(ok_pages, key=lambda o: o.page_num).final_url
                  if ok_pages else args.url)
 
@@ -1001,7 +1065,9 @@ def scrape(args) -> int:
                       pages_requested=args.pages, pages_completed=len(ok_pages),
                       pages_failed=failed_pages, mode=args.mode,
                       source=site_host(final_url) or "transfermarkt.com",
-                      start_url=args.url, final_url=final_url)
+                      start_url=args.url, final_url=final_url,
+                      extra={**pages.meta(),
+                             **page_flow.listing_filter_meta(args.mode, args.url)})
 
 
 def parse_args():
@@ -1029,6 +1095,12 @@ def parse_args():
                    help="Season start year for --mode club-squad, e.g. 2025 "
                         "for 2025/26. Omit for the site's own current-season "
                         "default.")
+    p.add_argument("--min-value", type=page_flow.bounded(int, 0, "--min-value"),
+                   default=None, metavar="EUR",
+                   help="Only --mode transfers: list transfers of players valued at least "
+                        "this many EUR (0 = no floor). Without it the site's own default "
+                        "view is read, which the site filters to EUR 500,000+ "
+                        "(measured 2026-10-15).")
     p.add_argument("--player-id", default=None,
                    help="Player id for --mode player, e.g. 418560 (Erling "
                         "Haaland).")
@@ -1121,6 +1193,11 @@ def parse_args():
             if not args.player_id:
                 p.error("--mode player needs --player-id (or --url)")
             args.url = player_url(args.player_id)
+
+    if args.min_value is not None:
+        if args.mode != "transfers":
+            p.error("--min-value applies to --mode transfers only")
+        args.url = transfers_url(args.min_value, base_url=args.url)
 
     if not is_supported_host(args.url):
         why = unsupported_reason(args.url)

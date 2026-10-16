@@ -177,6 +177,50 @@ BASE = "https://www.transfermarkt.com"
 
 MARKET_VALUES_URL = f"{BASE}/spieler-statistik/wertvollstespieler/marktwertetop"
 TRANSFERS_URL = f"{BASE}/statistik/neuestetransfers"
+# The same listing with its filters in the URL. Measured 2026-10-15: the
+# default view above applies the site's own floor of minMarktwert=500000
+# (players valued EUR 500,000+), carried by its filter form and tab links but
+# not by its own URL; this path takes the floor, and the other filters it
+# needs, as query parameters. `--min-value` builds it (see transfers_url).
+TRANSFERS_FILTERED_PATH = "/transfers/neuestetransfers/statistik"
+_TRANSFERS_FILTER_DEFAULTS = (("land_id", "0"), ("verein_land_id", "0"),
+                              ("wettbewerb_id", "alle"))
+_TRANSFERS_MAX_VALUE = "500000000"
+MIN_VALUE_PARAM = "minMarktwert"
+
+
+def transfers_url(min_value: int, base_url: Optional[str] = None) -> str:
+    """The latest-transfers listing filtered to players valued at least
+    `min_value` EUR (0 = unfiltered), on `base_url`'s host.
+
+    The filters already in `base_url` (a league, a country) are kept; the
+    ones the filtered path needs and that are missing get the site's own
+    "all" values, as its unfiltered URL carries them. The page number is
+    dropped: pagination starts again from page 1."""
+    from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+    parts = urlsplit(base_url or TRANSFERS_URL)
+    given = dict(parse_qsl(parts.query))
+    given.pop(PAGE_PARAM, None)
+    query = []
+    for key, default in _TRANSFERS_FILTER_DEFAULTS:
+        query.append((key, given.pop(key, default)))
+    given.pop(MIN_VALUE_PARAM, None)
+    query.append((MIN_VALUE_PARAM, str(int(min_value))))
+    query.append(("maxMarktwert", given.pop("maxMarktwert", _TRANSFERS_MAX_VALUE)))
+    query.extend(given.items())
+    return urlunsplit((parts.scheme or "https", parts.netloc or urlsplit(BASE).netloc,
+                       TRANSFERS_FILTERED_PATH, urlencode(query), ""))
+
+
+def min_value_of(url: Optional[str]) -> Optional[int]:
+    """The minMarktwert floor a listing URL carries, or None when it carries
+    none (the site's default view, whose floor is not in its URL)."""
+    from urllib.parse import urlsplit, parse_qsl
+    value = dict(parse_qsl(urlsplit(url or "").query)).get(MIN_VALUE_PARAM)
+    try:
+        return int(value) if value is not None else None
+    except ValueError:
+        return None
 
 
 def player_url(player_id: str, slug: str = "x") -> str:
@@ -805,6 +849,22 @@ def is_not_found_page(html: Optional[str], status: Optional[int] = None) -> bool
     return status in NOT_FOUND_STATUSES or bool(html and _NOT_FOUND_RE.search(html))
 
 
+# The edge's bare nginx 5xx page. Captured 2026-10-15 twice in one minute
+# (`<title>502 Bad Gateway</title>`, 155 bytes): once as the answer to a
+# listing page, once as the document left after the AWS WAF challenge
+# cleared. In the second case the challenge's 202 had been discarded, as it
+# must be, so nothing but the body said the page had failed; it classified as
+# `empty`, and the run carried on and ended "complete" with page 1 missing.
+# Read from the body, it classifies as the same `server_error` a visible 5xx
+# status gives it.
+_GATEWAY_ERROR_RE = re.compile(r"<title>\s*5\d\d [^<]{0,40}</title>\s*</head>\s*"
+                               r"<body>\s*<center><h1>\s*5\d\d", re.IGNORECASE)
+
+
+def is_gateway_error_page(html: Optional[str]) -> bool:
+    return bool(html and len(html) < 4096 and _GATEWAY_ERROR_RE.search(html))
+
+
 _CANONICAL_RES = (re.compile(r'<link rel="canonical" href="([^"]+)"'),
                   re.compile(r'<meta property="og:url" content="([^"]+)"'))
 
@@ -819,6 +879,21 @@ def canonical_url(html: Optional[str]) -> Optional[str]:
         if m:
             return m.group(1)
     return None
+
+
+def next_page_link(html: Optional[str], base_url: str) -> Optional[str]:
+    """The page's own next-page link, absolute, or None when it has none.
+
+    Read from the served HTML so every engine, the Scraper API client
+    included, records the same answer for the same page. A listing that fits
+    on one page carries neither `<link rel="next">` nor a pager (measured on
+    the latest-transfers listing 2026-10-15, 20 rows)."""
+    if not html:
+        return None
+    el = BeautifulSoup(html, "html.parser").select_one(
+        "link[rel='next'], a[rel='next']")
+    href = el.get("href") if el else None
+    return urljoin(base_url, href) if href else None
 
 
 def page_states_rows(html: Optional[str], mode: str) -> bool:
@@ -846,7 +921,7 @@ def page_states_rows(html: Optional[str], mode: str) -> bool:
 def detect_page_state(html: str, status: Optional[int] = None,
                       url: Optional[str] = None,
                       headers: Optional[Dict[str, str]] = None) -> str:
-    """content | blocked | captcha | empty | not_found — see
+    """content | blocked | captcha | empty | not_found | server_error — see
     page_flow.STATE_POLICY.
 
     The checks below are ordered by HOW MUCH EACH ONE PROVES, not by how
@@ -905,12 +980,18 @@ def detect_page_state(html: str, status: Optional[int] = None,
     if is_not_found_page(html, status):
         return "not_found"
 
+    if is_gateway_error_page(html):
+        return "server_error"
+
     vendor = detect_bot_challenge(html, url=url)
     if vendor:
         return "captcha" if vendor in SOLVABLE_VENDORS else "blocked"
 
     if not status_ok:
-        return "blocked"
+        # A 5xx with nothing in the body naming a vendor is the target's own
+        # server error, retried as such (page_flow "server_error"), never a
+        # refusal. Any other non-2xx stays a refusal.
+        return "server_error" if status >= 500 else "blocked"
 
     return "empty"
 
