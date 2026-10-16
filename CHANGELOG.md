@@ -4,6 +4,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-10-16
+
 > **Behaviour change:** `--retries 0` is now a usage error (exit 2). It used
 > to be accepted and made the page-load loop unreachable, so nothing was
 > fetched and the engine reported the browser's own blank page as a result:
@@ -64,6 +66,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   another `--mode`, is exit 2. The sidecar records `min_market_value_eur`
   and `market_value_filter` (`url`, or `site_default` when the floor is the
   site's own and not in the URL).
+- The family's access badge, worded to what the README measures: no account
+  is needed if AWS WAF lets your address through, which is a property of the
+  address on the day.
+- **Two static checks this suite did not have**, both ported from the audit
+  that ran across the family on 2026-09-16 and 2026-09-17:
+  - **calls into a shared module are bound against the callee's real
+    signature**. It catches a call whose arguments do not
+    fit, and a call to a name the shared module does not define at all —
+    both of which reach a live run as a crash on the first fetch while
+    import, `--help`, `compileall` and the undefined-name walk stay green.
+    It skips `*args`/`**kwargs` calls rather than guessing, treats a
+    locally-bound name as shadowing a same-named module (an engine takes
+    `proxy_pool` as a parameter), and asserts it found calls to bind so it
+    cannot pass by scanning nothing.
+  - **no statement the control flow can never reach** — a statement after a
+    `return`/`raise`/`break`/`continue` in the same block. The
+    undefined-name walk cannot see this class by design, since it pools
+    every binding in a file rather than tracking scopes. Six repos in this
+    family carried the same fifteen unreachable lines from their first
+    commit; this repo's current tree is clean, and the check is what keeps
+    it that way.
+
+  Both verified by control: a `return 1` followed by a statement, and a
+  `finish_run()` call with fourteen positional arguments, each turn the
+  suite red.
 
 ### Fixed
 
@@ -139,7 +166,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   were edited only to remove those citations.
 - `tests.yml` runs `.github/ci_checks.py --sample-check` instead of an
   inline copy of it.
-
 - **`--retries 0` fetched nothing and called it a result.** The load loop is
   `range(1, retries + 1)`, so 0 never runs it and the engine judged
   `about:blank`. Three third-party audits of this family ran exactly that and
@@ -147,7 +173,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `page_flow.attempts` in every entry point; a check reads the source of each
   one and calls the validator, so a new engine declaring the flag with a
   plain int fails the suite.
-
 - **Scraper API: `waitFor` is now sent as a JSON object.** It went out as a
   JSON-encoded string, following a docstring that said the API required one.
   Measured 2026-09-23 against `/tasks/sync`: the string form is refused with
@@ -166,34 +191,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   WAF captcha. It now points at `tools/waf_probe.sh` and the README's
   "What the 2Captcha products are for here".
 - `SECURITY.md` said this project has no releases or tags; it has both.
-
-### Added
-
-- The family's access badge, worded to what the README measures: no account
-  is needed if AWS WAF lets your address through, which is a property of the
-  address on the day.
-- **Two static checks this suite did not have**, both ported from the audit
-  that ran across the family on 2026-09-16 and 2026-09-17:
-  - **calls into a shared module are bound against the callee's real
-    signature**. It catches a call whose arguments do not
-    fit, and a call to a name the shared module does not define at all —
-    both of which reach a live run as a crash on the first fetch while
-    import, `--help`, `compileall` and the undefined-name walk stay green.
-    It skips `*args`/`**kwargs` calls rather than guessing, treats a
-    locally-bound name as shadowing a same-named module (an engine takes
-    `proxy_pool` as a parameter), and asserts it found calls to bind so it
-    cannot pass by scanning nothing.
-  - **no statement the control flow can never reach** — a statement after a
-    `return`/`raise`/`break`/`continue` in the same block. The
-    undefined-name walk cannot see this class by design, since it pools
-    every binding in a file rather than tracking scopes. Six repos in this
-    family carried the same fifteen unreachable lines from their first
-    commit; this repo's current tree is clean, and the check is what keeps
-    it that way.
-
-  Both verified by control: a `return 1` followed by a statement, and a
-  `finish_run()` call with fourteen positional arguments, each turn the
-  suite red.
 
 ## [1.1.0] — 2026-09-17
 
