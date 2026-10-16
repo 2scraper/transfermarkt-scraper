@@ -118,7 +118,7 @@ jobs:
           set +e
           python3 playwright_scraper.py \
             --mode transfers --pages 3 \
-            --url "https://www.transfermarkt.com/transfers/neuestetransfers/statistik?land_id=0&verein_land_id=0&wettbewerb_id=alle&minMarktwert=0&maxMarktwert=500000000" \
+            --min-value 0 \
             --out canary_transfers --dump-html canary_transfers.html
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
 
@@ -251,6 +251,10 @@ jobs:
           rows = json.loads(Path("canary_transfers.json").read_text())
           meta = json.loads(Path("canary_transfers.meta.json").read_text())
           fail = []
+
+          if meta.get("min_market_value_eur") != 0:
+              fail.append(f"min_market_value_eur={meta.get('min_market_value_eur')!r}, "
+                          f"expected 0 from --min-value 0")
 
           # Tests the pagination and the parser, not the transfer season:
           # more than one page's worth of rows (25 a page) means a second

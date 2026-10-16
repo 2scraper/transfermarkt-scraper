@@ -4306,15 +4306,16 @@ def test_csv_formula_escape():
 BOUNDED_FLAGS = {
     "playwright_scraper.py": {"--pages": 1, "--delay": 0, "--concurrency": 1,
                               "--retry-delay": 0, "--proxy-sessions": 1,
-                              "--proxy-block-retries": 0},
+                              "--proxy-block-retries": 0, "--min-value": 0},
     "puppeteer_scraper.py": {"--pages": 1, "--delay": 0, "--concurrency": 1,
                              "--retry-delay": 0, "--proxy-sessions": 1,
-                             "--proxy-block-retries": 0},
+                             "--proxy-block-retries": 0, "--min-value": 0},
     "selenium_scraper.py": {"--pages": 1, "--delay": 0, "--concurrency": 1,
                             "--retry-delay": 0, "--proxy-sessions": 1,
-                            "--proxy-block-retries": 0},
+                            "--proxy-block-retries": 0, "--min-value": 0},
     "scraper_api_client.py": {"--pages": 1, "--delay": 0, "--timeout": 1,
-                              "--retries": 0, "--retry-delay": 0},
+                              "--retries": 0, "--retry-delay": 0,
+                              "--min-value": 0},
 }
 # Numeric, and deliberately not a count: a score threshold.
 UNBOUNDED_NUMERIC_FLAGS = {"--min-score"}
@@ -4752,7 +4753,7 @@ def _run_listing(modname, url, pages, html_for_page, extra_argv=()):
             os.environ["TWOCAPTCHA_KEY"] = "test-placeholder"
         sys.argv = [modname + ".py", "--mode", "transfers", "--url", url,
                     "--pages", str(pages), "--delay", "0", "--out", out,
-                    "--format", "json"] + list(extra_argv)
+                    "--format", "json", "--retry-delay", "0"] + list(extra_argv)
         args = mod.parse_args()
         if modname == "scraper_api_client":
             patch("fetch_html", lambda a, u, timeout:
@@ -4869,10 +4870,10 @@ def test_listing_end_and_repeated_pages(skips):
 
     # A bare nginx 5xx is a page not served, with or without its status.
     from product_parser import detect_page_state, is_gateway_error_page
-    ok &= check("the edge's 502 page, with no status, is not an empty page",
-                detect_page_state(FIX_NGINX_502) == "blocked")
+    ok &= check("the edge's 502 page, with no status, is a server error, not an empty page",
+                detect_page_state(FIX_NGINX_502) == "server_error")
     ok &= check("...and classifies the same with its status",
-                detect_page_state(FIX_NGINX_502, status=502) == "blocked")
+                detect_page_state(FIX_NGINX_502, status=502) == "server_error")
     ok &= check("the 502 marker matches none of the served or 404 captures",
                 not any(is_gateway_error_page(h) for h in (
                     FIX_TRANSFERS_ONE_PAGE_P1, FIX_TRANSFERS_PAGED_P1,
@@ -4882,9 +4883,8 @@ def test_listing_end_and_repeated_pages(skips):
     gateway_first = lambda n: FIX_NGINX_502 if n == 1 else FIX_TRANSFERS_PAGED_P2
     rc, meta, skus = _run_listing("scraper_api_client", TRANSFERS_PAGED_URL, 2,
                                   gateway_first)
-    ok &= check("a 502 for page 1 is not a complete run (got rc=%s %s)"
-                % (rc, meta.get("status")),
-                rc != 0 and meta.get("status") != "complete")
+    ok &= check("a 502 for page 1 is exit 5, not blocked and not complete (got rc=%s)"
+                % rc, rc == 5 and meta.get("status") != "complete")
 
     # The runs below replace each engine's _fetch_one_page, so whether the
     # real one records the page's next link is checked on its source.
@@ -4942,6 +4942,332 @@ def test_listing_end_and_repeated_pages(skips):
                     rc == 6 and meta.get("stop_reason") == "page_repeated"
                     and meta.get("status") == "partial"
                     and meta.get("pages_completed") == 1 and skus == [r.sku for r in p1])
+    return ok
+
+
+class _Site:
+    """Answers each URL from a per-page script of (status, html) replies; the
+    last reply repeats. Counts the requests per page."""
+
+    def __init__(self, script):
+        self.script = script          # {page_num: [(status, html), ...]}
+        self.hits = {}
+
+    def serve(self, url):
+        from product_parser import page_number_from_url
+        n = page_number_from_url(url) or 1
+        replies = self.script[n]
+        i = self.hits.get(n, 0)
+        self.hits[n] = i + 1
+        return replies[min(i, len(replies) - 1)]
+
+
+def _select(html, selector):
+    from bs4 import BeautifulSoup
+    return BeautifulSoup(html or "", "html.parser").select(selector)
+
+
+class _PWPage:
+    def __init__(self, site):
+        self.site, self.url, self.html = site, "about:blank", ""
+
+    def goto(self, url, **_kw):
+        status, self.html = self.site.serve(url)
+        self.url = url
+        return type("Resp", (), {"status": status, "headers": {}})()
+
+    def content(self):
+        return self.html
+
+    def query_selector_all(self, selector):
+        return _select(self.html, selector)
+
+    def query_selector(self, selector):
+        found = _select(self.html, selector)
+        if not found:
+            return None
+        href = found[0].get("href")
+        return type("El", (), {"get_attribute": lambda self, _n: href})()
+
+    def evaluate(self, _js):
+        return None
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+    def screenshot(self, **_kw):
+        pass
+
+
+class _PupPage(_PWPage):
+    async def goto(self, url, *_a, **_kw):
+        return _PWPage.goto(self, url)
+
+    async def content(self):
+        return self.html
+
+    async def querySelectorAll(self, selector):
+        return _select(self.html, selector)
+
+    async def evaluate(self, *_a, **_kw):
+        return None
+
+    async def screenshot(self, *_a, **_kw):
+        return None
+
+
+class _SelDriver:
+    def __init__(self, site):
+        self.site, self.current_url, self.page_source = site, "about:blank", ""
+
+    def get(self, url):
+        _status, self.page_source = self.site.serve(url)
+        self.current_url = url
+
+    def find_elements(self, _by, selector):
+        return _select(self.page_source, selector)
+
+    def execute_script(self, *_a):
+        return None
+
+    def save_screenshot(self, *_a):
+        return True
+
+
+class _Bridge:
+    def run(self, coro, timeout=None):
+        import asyncio
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def close(self):
+        pass
+
+
+def _run_site(modname, url, pages, site, extra_argv=()):
+    """One entry point's real scrape() and real _fetch_one_page against a
+    scripted site; only the browser (or the Scraper API call) is replaced.
+    Returns (rc, meta)."""
+    mod = importlib.import_module(modname)
+    tmp = tempfile.mkdtemp(prefix="tm_site_")
+    out = os.path.join(tmp, "out")
+    saved, saved_argv = {}, sys.argv
+    env_names = set(env_config.ENV_KEYS) | {"TWOCAPTCHA_KEY"}
+    saved_env = {k: os.environ.get(k) for k in env_names}
+
+    def patch(name, value):
+        saved[name] = getattr(mod, name)
+        setattr(mod, name, value)
+
+    class Session:
+        pool = None
+
+        def open(self):
+            return self
+
+        def close(self):
+            pass
+
+        def relaunch(self):
+            return self
+
+    session = Session()
+    try:
+        for k in env_names:
+            os.environ.pop(k, None)
+        if modname == "scraper_api_client":
+            os.environ["TWOCAPTCHA_KEY"] = "test-placeholder"
+        sys.argv = [modname + ".py", "--mode", "transfers", "--url", url,
+                    "--pages", str(pages), "--delay", "0", "--retry-delay", "0",
+                    "--out", out, "--format", "json", "--allow-empty"] + list(extra_argv)
+        args = mod.parse_args()
+        if modname == "scraper_api_client":
+            def fetch(a, u, timeout):
+                status, html = site.serve(u)
+                return html, status, {}
+            patch("fetch_html", fetch)
+        elif modname == "playwright_scraper":
+            session.page = _PWPage(site)
+            patch("sync_playwright", lambda: _FakePlaywright())
+            patch("_BrowserSession", lambda pw, a, pool, **kw: session)
+        elif modname == "puppeteer_scraper":
+            session.page, session.bridge = _PupPage(site), _Bridge()
+            patch("_AsyncBridge", lambda: session.bridge)
+            patch("_Session", lambda *a, **kw: session)
+        else:
+            session.driver = _SelDriver(site)
+            patch("_Session", lambda *a, **kw: session)
+        rc = mod.scrape(args)
+    finally:
+        for name, value in saved.items():
+            setattr(mod, name, value)
+        sys.argv = saved_argv
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    meta = {}
+    if os.path.exists(out + ".meta.json"):
+        meta = json.load(open(out + ".meta.json", encoding="utf-8"))
+    shutil.rmtree(tmp, ignore_errors=True)
+    return rc, meta
+
+
+def test_target_5xx_is_a_server_error(skips):
+    group("a 5xx from the site is a server error: retried, then failed, never blocked")
+    from product_parser import detect_page_state
+    ok = True
+    ok &= check("HTTP 500 with an ordinary error body is a server error",
+                detect_page_state("<html><body>Internal error</body></html>",
+                                  status=500) == "server_error")
+    ok &= check("a 5xx that carries a vendor challenge is still not a server error",
+                detect_page_state(FIX_AWS_WAF_CHALLENGE, status=503) != "server_error")
+    ok &= check("a 403 stays a refusal",
+                detect_page_state("<html><body>Forbidden</body></html>",
+                                  status=403) == "blocked")
+    ok &= check("server_error is neither blocked, rotated past nor paid for",
+                not page_flow.counts_as_blocked("server_error")
+                and not page_flow.should_retry("server_error")
+                and not page_flow.should_solve("server_error"))
+
+    slept = []
+    tries = page_flow.PageAttempts(0, 1.5, sleep=slept.append)
+    seen = []
+    for i in tries:
+        seen.append(i)
+        if not tries.again_after_server_error(1, 502):
+            break
+    ok &= check("PageAttempts: 2 same-exit retries, then stops (yielded %s)" % seen,
+                seen == [0, 0, 0] and tries.server_retries_used == 2)
+    ok &= check("PageAttempts: backoff is --retry-delay x1, x2 (%s)" % slept,
+                slept == [1.5, 3.0])
+    tries = page_flow.PageAttempts(2, 0)
+    ok &= check("PageAttempts: without a retry it is range(block_retries + 1)",
+                list(tries) == [0, 1, 2])
+
+    e502 = (502, FIX_NGINX_502)
+    p1, p2 = (200, FIX_TRANSFERS_PAGED_P1), (200, FIX_TRANSFERS_PAGED_P2)
+    for modname in ("scraper_api_client", "playwright_scraper",
+                    "puppeteer_scraper", "selenium_scraper"):
+        try:
+            importlib.import_module(modname)
+        except ImportError as e:
+            skips.append("%s 5xx run (%s)" % (modname, e))
+            continue
+        site = _Site({1: [e502, e502, p1], 2: [p2]})
+        rc, meta = _run_site(modname, TRANSFERS_PAGED_URL, 2, site)
+        ok &= check("%s: two 502s, then served -> exit 0, page 1 fetched 3 times "
+                    "(got rc=%s hits=%s)" % (modname, rc, site.hits),
+                    rc == 0 and site.hits.get(1) == 3
+                    and meta.get("pages_completed") == 2 and meta.get("products") == 6)
+        site = _Site({1: [e502]})
+        rc, meta = _run_site(modname, TRANSFERS_PAGED_URL, 2, site)
+        ok &= check("%s: page 1 a 502 every time -> exit 5, target_http_5xx, "
+                    "3 fetches, never exit 3 (got rc=%s %s hits=%s)"
+                    % (modname, rc, meta.get("stop_reason"), site.hits),
+                    rc == 5 and meta.get("stop_reason") == "target_http_5xx"
+                    and site.hits.get(1) == 3 and meta.get("status") != "complete")
+        site = _Site({1: [p1], 2: [e502]})
+        rc, meta = _run_site(modname, TRANSFERS_PAGED_URL, 2, site)
+        ok &= check("%s: page 2 a 502 every time -> exit 6, target_http_5xx, "
+                    "page 2 failed (got rc=%s %s %s)"
+                    % (modname, rc, meta.get("stop_reason"), meta.get("pages_failed")),
+                    rc == 6 and meta.get("stop_reason") == "target_http_5xx"
+                    and meta.get("pages_failed") == [2] and site.hits.get(2) == 3)
+    return ok
+
+
+def test_min_value_flag(skips):
+    group("--min-value: the latest-transfers market-value floor")
+    from product_parser import transfers_url, min_value_of
+    ok = True
+    ok &= check("--min-value 0 builds the unfiltered listing URL measured 2026-10-15",
+                transfers_url(0) == TRANSFERS_PAGED_URL)
+    kept = transfers_url(250000, base_url=TRANSFERS_PAGED_URL.replace(
+        "wettbewerb_id=alle", "wettbewerb_id=GB1") + "&page=3")
+    ok &= check("a typed URL's own filters are kept, its page dropped (%s)" % kept,
+                "wettbewerb_id=GB1" in kept and "minMarktwert=250000" in kept
+                and "page=" not in kept)
+    ok &= check("min_value_of reads the floor, None for the default view",
+                min_value_of(TRANSFERS_PAGED_URL) == 0
+                and min_value_of(TRANSFERS_URL) is None)
+    ok &= check("the sidecar names the floor, or the site's default view",
+                page_flow.listing_filter_meta("transfers", TRANSFERS_PAGED_URL)
+                == {"min_market_value_eur": 0, "market_value_filter": "url"}
+                and page_flow.listing_filter_meta("transfers", TRANSFERS_URL)
+                == {"min_market_value_eur": None, "market_value_filter": "site_default"}
+                and page_flow.listing_filter_meta("market-values", MARKET_VALUES_URL) == {})
+
+    saved_argv = sys.argv
+    env_names = set(env_config.ENV_KEYS) | {"TWOCAPTCHA_KEY"}
+    saved_env = {k: os.environ.get(k) for k in env_names}
+    try:
+        for k in env_names:
+            os.environ.pop(k, None)
+        os.environ["TWOCAPTCHA_KEY"] = "test-placeholder"
+        for modname in ("scraper_api_client", "playwright_scraper",
+                        "puppeteer_scraper", "selenium_scraper"):
+            try:
+                mod = importlib.import_module(modname)
+            except ImportError as e:
+                skips.append("%s --min-value parse_args (%s)" % (modname, e))
+                continue
+            for argv, want in ((["--mode", "transfers"], TRANSFERS_URL),
+                               (["--mode", "transfers", "--min-value", "0"],
+                                TRANSFERS_PAGED_URL),
+                               (["--mode", "transfers", "--min-value", "500000"],
+                                TRANSFERS_PAGED_URL.replace("minMarktwert=0",
+                                                            "minMarktwert=500000"))):
+                sys.argv = [modname + ".py"] + argv
+                ok &= check("%s %s -> %s" % (modname, " ".join(argv), want),
+                            mod.parse_args().url == want)
+            for argv in (["--mode", "transfers", "--min-value", "-1"],
+                         ["--mode", "transfers", "--min-value", "x"],
+                         ["--mode", "market-values", "--min-value", "0"]):
+                sys.argv = [modname + ".py"] + argv
+                code = None
+                try:
+                    with open(os.devnull, "w") as devnull:
+                        saved_err, sys.stderr = sys.stderr, devnull
+                        try:
+                            mod.parse_args()
+                        finally:
+                            sys.stderr = saved_err
+                except SystemExit as e:
+                    code = e.code
+                ok &= check("%s %s -> exit 2" % (modname, " ".join(argv)), code == 2)
+    finally:
+        sys.argv = saved_argv
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    for modname in ("scraper_api_client", "selenium_scraper"):
+        try:
+            importlib.import_module(modname)
+        except ImportError as e:
+            skips.append("%s --min-value run (%s)" % (modname, e))
+            continue
+        paged = {1: FIX_TRANSFERS_PAGED_P1, 2: FIX_TRANSFERS_PAGED_P2}
+        rc, meta, skus = _run_listing(modname, TRANSFERS_URL, 2,
+                                      lambda n: paged[n], ("--min-value", "0"))
+        ok &= check("%s --min-value 0: the sidecar records min_market_value_eur 0 "
+                    "and the run reads the filtered path (got %s)"
+                    % (modname, meta.get("start_url")),
+                    rc == 0 and meta.get("min_market_value_eur") == 0
+                    and meta.get("market_value_filter") == "url"
+                    and meta.get("start_url") == TRANSFERS_PAGED_URL and len(skus) == 6)
+        rc, meta, skus = _run_listing(modname, TRANSFERS_URL, 1,
+                                      lambda n: FIX_TRANSFERS_ONE_PAGE_P1)
+        ok &= check("%s without --min-value: the sidecar says site_default" % modname,
+                    rc == 0 and meta.get("min_market_value_eur") is None
+                    and meta.get("market_value_filter") == "site_default")
     return ok
 
 
@@ -5008,6 +5334,8 @@ def main() -> int:
     ok &= test_credential_scan_judges_paths_inside_the_repo()
     ok &= test_no_private_citations()
     ok &= test_listing_end_and_repeated_pages(skips)
+    ok &= test_target_5xx_is_a_server_error(skips)
+    ok &= test_min_value_flag(skips)
 
     print()
     if _failures:

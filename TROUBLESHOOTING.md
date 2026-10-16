@@ -50,8 +50,16 @@ as `no_new_products`, also complete.
 **`--mode transfers` stops after one page of about 20 rows.** On 2026-10-15
 the default latest-transfers view (filtered by the site to players valued
 EUR 500,000+) held 20 transfers: one page, no pager. That is the site's whole
-listing for that filter. The unfiltered listing is longer; see "How deep that
-listing goes" in the README for its URL.
+listing for that filter. `--min-value 0` reads the unfiltered listing (4 pages
+that day); see "How deep that listing goes" in the README.
+
+## Exit 5 or 6 with `stop_reason: target_http_5xx`
+
+Transfermarkt answered with a server error (an HTTP 5xx, or the edge's
+155-byte nginx `502 Bad Gateway` page) and still did after 2 more tries on
+the same exit, `--retry-delay` and then twice that apart. Seen intermittently
+on 2026-10-15, one page at a time. It is not a block and not an empty
+result; run again later.
 
 ## Exit 6 with `stop_reason: page_repeated`
 

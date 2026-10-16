@@ -320,6 +320,12 @@ STATE_POLICY = {
     # all four engines reach the same answer whether or not they can see the
     # status code.
     "not_found": {"retry": False, "solve": False, "blocked": False},
+    # The target's own 5xx: an HTTP 5xx status, or the edge's bare nginx 5xx
+    # page when no status is visible. A transient server error, not a
+    # refusal: never rotated past (`retry` here means "from another exit"),
+    # never paid for, never counted as blocked. Retried on the same exit by
+    # PageAttempts below, then the page is failed as STOP_TARGET_HTTP_5XX.
+    "server_error": {"retry": False, "solve": False, "blocked": False},
 }
 
 
@@ -339,6 +345,62 @@ def counts_as_blocked(state: str) -> bool:
 # A complete answer (exit 4 with no rows): the site said the thing asked for
 # does not exist, which is a fact about the site, not a failed fetch.
 STOP_NOT_FOUND = "not_found"
+
+# Stop reason for a page the target answered with a 5xx after every retry.
+# Not complete and not blocked: exit 5 on page 1, exit 6 on a later page.
+STOP_TARGET_HTTP_5XX = "target_http_5xx"
+
+# How many times a 5xx page is fetched again on the same exit before it is
+# failed. Measured 2026-10-15: the edge answered 3 of about 30 page loads in
+# one evening with a 155-byte nginx 502, each time for a single page, and a
+# later fetch of the same URL was served. Backoff: --retry-delay x 1, x 2.
+SERVER_ERROR_RETRIES = 2
+
+
+class PageAttempts:
+    """The block-retry loop's iterator, plus a bounded same-exit retry for a
+    server error.
+
+    Yields block-attempt indices 0..block_retries like `range()`. After
+    `again_after_server_error()` returns True, the NEXT step yields the same
+    index again, so a 5xx retry does not use up a proxy rotation and never
+    triggers one. The page's SolveBudget lives outside this loop and is not
+    reset by it.
+    """
+
+    def __init__(self, block_retries: int, retry_delay: float = 0.0,
+                 server_retries: Optional[int] = None,
+                 sleep: Optional[Callable[[float], None]] = None):
+        self.block_retries = block_retries
+        self.retry_delay = retry_delay
+        self.server_retries = (SERVER_ERROR_RETRIES if server_retries is None
+                               else server_retries)
+        self.server_retries_used = 0
+        self._sleep = sleep
+        self._index = 0
+        self._repeat = False
+
+    def __iter__(self):
+        while self._index <= self.block_retries:
+            self._repeat = False
+            yield self._index
+            if not self._repeat:
+                self._index += 1
+
+    def again_after_server_error(self, page_num: int, status=None) -> bool:
+        if self.server_retries_used >= self.server_retries:
+            return False
+        self.server_retries_used += 1
+        pause = self.retry_delay * (2 ** (self.server_retries_used - 1))
+        logger.warning("Page %d: the site answered with a server error (HTTP "
+                       "%s) — fetching it again in %.1fs (%d/%d).", page_num,
+                       status if status is not None else "5xx, read from the page",
+                       pause, self.server_retries_used, self.server_retries)
+        if pause:
+            (self._sleep or __import__("time").sleep)(pause)
+        self._repeat = True
+        return True
+
 
 # Stop reason for a served page that holds rows the parser could not read: a
 # markup change, never an empty listing. Not complete, so exit 5 on page 1
@@ -376,6 +438,8 @@ def failure_reason(outcome) -> str:
         return "page_load_timeout"
     if getattr(outcome, "parse_failed", False):
         return STOP_PARSER_FOUND_NOTHING
+    if getattr(outcome, "server_error", False):
+        return STOP_TARGET_HTTP_5XX
     if getattr(outcome, "state", None) == "not_found":
         # Only reachable on a page after the first: page 1's "not found" is
         # the run's answer (STOP_NOT_FOUND), a later page's is a page lost.
@@ -465,6 +529,19 @@ class PageSequence:
         return {"repeated_page": self.repeat["page"],
                 "repeat_of_page": self.repeat["same_as"],
                 "listing_pages": self.repeat["page"] - 1}
+
+
+def listing_filter_meta(mode: str, url: Optional[str]) -> dict:
+    """Sidecar keys naming the market-value floor a transfers run actually
+    used: the one in its URL (`--min-value`, or a typed --url), or the site's
+    own default view, whose floor is not in the URL (EUR 500,000 when
+    measured 2026-10-15; the site sets it, so it is not asserted here)."""
+    if mode != "transfers":
+        return {}
+    from product_parser import min_value_of
+    floor = min_value_of(url)
+    return {"min_market_value_eur": floor,
+            "market_value_filter": "url" if floor is not None else "site_default"}
 
 
 def settle_repeats(outcomes) -> PageSequence:

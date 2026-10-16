@@ -59,7 +59,7 @@ from product_parser import (parse_market_values, parse_club_squad,
                             next_page_link,
                             site_host, is_supported_host, unsupported_reason,
                             HOSTS, player_url, club_squad_url,
-                            MARKET_VALUES_URL, TRANSFERS_URL)
+                            MARKET_VALUES_URL, TRANSFERS_URL, transfers_url)
 from output_writer import dedupe_by_key, finish_run, RemoteAPIError, EXIT_REMOTE_API_ERROR
 import page_flow
 from proxy_pool import (from_args as proxy_pool_from_args, mask, ROTATE_MODES,
@@ -151,6 +151,8 @@ class PageOutcome:
     # decides whether a repeated page is the listing's end or a page
     # lost (page_flow.PageSequence).
     next_url: Optional[str] = None
+    # The target answered 5xx on every try (page_flow.STOP_TARGET_HTTP_5XX).
+    server_error: bool = False
 
     @property
     def ok(self) -> bool:
@@ -158,7 +160,8 @@ class PageOutcome:
         # page it is a page the run did not get.
         lost = self.state == "not_found" and self.page_num > 1
         return (not self.load_failed and self.blocked_by is None
-                and not self.parse_failed and not lost)
+                and not self.parse_failed and not self.server_error
+                and not lost)
 
 
 class _Session:
@@ -447,7 +450,10 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
     budget = page_flow.SolveBudget()
     html, state, load_failed = None, "ok", False
 
-    for block_attempt in range(block_retries + 1):
+    # A 5xx is fetched again on the same exit (bounded); a block moves on
+    # to the next exit. Both under the one budget above.
+    tries = page_flow.PageAttempts(block_retries, args.retry_delay)
+    for block_attempt in tries:
         logger.info("Fetching page %d: %s", page_num, url)
         load_failed = False
         for attempt in range(1, args.retries + 1):
@@ -487,6 +493,9 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         html = d["content"]() or ""
         state = page_flow.classify(html, url=page.url)
 
+        if state == "server_error" and tries.again_after_server_error(
+                page_num, None):
+            continue
         if not page_flow.should_retry(state):
             break
 
@@ -517,6 +526,21 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
                      "Check --club-id / --player-id / --url.", page_num, url,
                      page.url)
         outcome.final_url = page.url
+        return outcome
+
+    if state == "server_error":
+        # The target's own 5xx, still there after the same-exit retries:
+        # a page not served. Not a block (exit 3) and not an empty page.
+        debug_html = f"{args.out}_page{page_num}_debug.html"
+        with open(debug_html, "w", encoding="utf-8") as f:
+            f.write(html or "")
+        logger.error("Page %d: the site answered with a server error "
+                     "after %d retr%s — saved to %s.", page_num,
+                     tries.server_retries_used,
+                     "y" if tries.server_retries_used == 1 else "ies",
+                     debug_html)
+        outcome.server_error = True
+        outcome.final_url = d["current_url"]()
         return outcome
 
     if state == "blocked":
@@ -722,7 +746,8 @@ def scrape(args) -> int:
                       pages_failed=failed_pages, mode=args.mode,
                       source=site_host(final_url) or "transfermarkt.com",
                       start_url=args.url, final_url=final_url,
-                      extra=pages.meta())
+                      extra={**pages.meta(),
+                             **page_flow.listing_filter_meta(args.mode, args.url)})
 
 
 def parse_args():
@@ -732,6 +757,12 @@ def parse_args():
     p.add_argument("--url", default=None)
     p.add_argument("--club-id", default=None)
     p.add_argument("--season", default=None)
+    p.add_argument("--min-value", type=page_flow.bounded(int, 0, "--min-value"),
+                   default=None, metavar="EUR",
+                   help="Only --mode transfers: list transfers of players valued at least "
+                        "this many EUR (0 = no floor). Without it the site's own default "
+                        "view is read, which the site filters to EUR 500,000+ "
+                        "(measured 2026-10-15).")
     p.add_argument("--player-id", default=None)
     p.add_argument("--pages", type=page_flow.bounded(int, 1, "--pages"), default=1)
     p.add_argument("--delay", type=page_flow.bounded(float, 0, "--delay"), default=2.0)
@@ -809,6 +840,11 @@ def parse_args():
             if not args.player_id:
                 p.error("--mode player needs --player-id (or --url)")
             args.url = player_url(args.player_id)
+
+    if args.min_value is not None:
+        if args.mode != "transfers":
+            p.error("--min-value applies to --mode transfers only")
+        args.url = transfers_url(args.min_value, base_url=args.url)
 
     if not is_supported_host(args.url):
         why = unsupported_reason(args.url)
