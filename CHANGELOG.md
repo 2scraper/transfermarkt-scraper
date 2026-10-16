@@ -6,9 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- CI only: the canary's optional paid secrets `TRANSFERMARKT_CDP_ENDPOINT`, `TRANSFERMARKT_PROXY` now reach it only on a new weekly
-  run (Mondays 07:37 UTC) and on a manual dispatch. The daily run keeps its
-  schedule and takes the free route without them, so it bills nothing.
+- CI only: the canary now runs weekly (Mondays 07:37 UTC) and on a manual dispatch, with its optional secrets `TRANSFERMARKT_CDP_ENDPOINT`, `TRANSFERMARKT_PROXY` passed on every run; the daily schedule is removed.
 
 ## [1.2.0] — 2026-10-16
 
