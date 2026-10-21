@@ -908,6 +908,88 @@ def test_locale_translation():
                 "through unchanged",
                 translate_nationality("Norway", locale="ja") == "Norway")
 
+    # The 2026-10-21 supplement (200 players per host, matched by sku). Before
+    # it, 8 German ranking pages logged 31 untranslated nationalities and a
+    # position; the site's own odd translations are kept as printed.
+    supplement_cases = [
+        (translate_nationality, "de", "Türkei", "Türkiye"),
+        (translate_nationality, "de", "Senegal", "Senegal"),
+        (translate_nationality, "de", "Vereinigte Staaten", "United States"),
+        (translate_nationality, "ru", "Того", "Togo"),
+        (translate_nationality, "ko", "이동", "Togo"),
+        (translate_nationality, "ko", "왜냐하면", "Cuba"),
+        (translate_nationality, "ja", "Turkey", "Türkiye"),
+        (translate_nationality, "ja", "Grenadaj", "Grenada"),
+        (translate_position, "de", "Linkes Mittelfeld", "Left Midfield"),
+        (translate_position, "ru", "Вратарь", "Goalkeeper"),
+        (translate_position, "ko", "골키퍼", "Goalkeeper"),
+        (translate_position, "ja", "左サイドバック", "Left-Back"),
+    ]
+    for fn, locale, native, expected in supplement_cases:
+        ok &= check("%s(%r, locale=%r) == %r (2026-10-21 supplement)"
+                    % (fn.__name__, native, locale, expected),
+                    fn(native, locale=locale) == expected)
+    import product_parser as _pp
+    ok &= check("the supplement contradicts no entry it was merged into "
+                "(every pair agreed when derived; this keeps it so)",
+                all(_pp._NATIONALITY_EN[l][k] == v
+                    for l, t in _pp._NATIONALITY_EN_SUPPLEMENT.items()
+                    for k, v in t.items()))
+
+    # The full lists from the site's own filter <select>s (locale_names.py).
+    # These names were all logged untranslated on three club squads on
+    # 2026-10-21, after the supplement above was in place.
+    for fn, locale, native, expected in (
+            (translate_nationality, "de", "Österreich", "Austria"),
+            (translate_nationality, "de", "Südkorea", "Korea, South"),
+            (translate_nationality, "ru", "Украина", "Ukraine"),
+            (translate_nationality, "ko", "폴란드", "Poland"),
+            (translate_position, "de", "Hängende Spitze", "Second Striker"),
+            (translate_position, "ru", "Оттянутый нап.", "Second Striker"),
+            (translate_position, "ko", "세컨드 스트라이커", "Second Striker")):
+        ok &= check("%s(%r, locale=%r) == %r (site's own list)"
+                    % (fn.__name__, native, locale, expected),
+                    fn(native, locale=locale) == expected)
+    import locale_names
+    ok &= check("locale_names covers every country the site lists, per locale "
+                "(254 on 2026-10-21) and every position (16)",
+                all(len(locale_names.NATIONALITY_EN[l]) >= 250 for l in ("de", "ru", "ko"))
+                and all(len(locale_names.POSITION_EN[l]) == 16 for l in ("de", "ru", "ko", "ja")))
+    ok &= check("...and agrees with every pair measured from players' rows",
+                all(_pp._NATIONALITY_EN[l][k] == v
+                    for l, t in _pp._NATIONALITY_EN_MEASURED.items() for k, v in t.items())
+                and all(locale_names.POSITION_EN[l].get(k) == v
+                        for l, t in _pp._POSITION_EN_MEASURED.items() for k, v in t.items()))
+
+    # The generator itself, on a minimal page: pairs by option VALUE, skips
+    # "All", refuses a list it cannot map unambiguously.
+    sys.path.insert(0, os.path.join(REPO_ROOT, "tools"))
+    import build_locale_names as bln
+
+    def page(countries, positions):
+        opt = lambda d: "".join('<option value="%s">%s</option>' % kv for kv in d.items())
+        return ('<select name="land_id"><option value="0">All</option>%s</select>'
+                '<select name="spielerposition_id"><option value="alle">All</option>%s</select>'
+                % (opt(countries), opt(positions)))
+    pages = {"en": page({"1": "Austria", "2": "Turkiye"}, {"1": "Goalkeeper"}),
+             "de": page({"2": "Türkei", "1": "Österreich"}, {"1": "Torwart"}),
+             "ru": page({"1": "Австрия"}, {"1": "Вратарь"}),
+             "ko": page({"1": "오스트리아"}, {"1": "골키퍼"}),
+             "ja": page({"1": "Austria", "2": "Turkey"}, {"1": "ゴールキーパー"})}
+    t = bln.build(pages)
+    ok &= check("build_locale_names pairs by option value, not by order",
+                t["nationality"]["de"] == {"Türkei": "Turkiye", "Österreich": "Austria"}
+                and t["position"]["ru"] == {"Вратарь": "Goalkeeper"})
+    ok &= check("...keeps only the Japanese names that differ from English",
+                t["nationality"]["ja"] == {"Turkey": "Turkiye"})
+    try:
+        bln.options('<select name="land_id"><option value="1">X</option>'
+                    '<option value="2">X</option></select>', "land_id")
+        refused = False
+    except SystemExit:
+        refused = True
+    ok &= check("...and refuses a list with a duplicate name", refused)
+
     # An untranslated string (not in the table) must pass through AS-IS,
     # never crash and never get mis-translated by a guess.
     ok &= check("an unmapped position passes through untranslated, not raise",

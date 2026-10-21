@@ -25,7 +25,7 @@ RUN pip install --no-cache-dir -r requirements.txt -r requirements-playwright.tx
 # entrypoint's real import graph -- this family has shipped a broken image
 # from a missing COPY line three times before (see that test's docstring),
 # because nothing else in a repo like this ever builds the image.
-COPY captcha_solver.py env_config.py fingerprint_client.py output_writer.py \
+COPY captcha_solver.py env_config.py fingerprint_client.py locale_names.py output_writer.py \
      page_flow.py playwright_scraper.py product_parser.py proxy_pool.py \
      diff_runs.py ./
 
