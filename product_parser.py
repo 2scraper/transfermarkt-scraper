@@ -1069,6 +1069,24 @@ def next_page_link(html: Optional[str], base_url: str) -> Optional[str]:
     return urljoin(base_url, href) if href else None
 
 
+def served_page_number(html: Optional[str]) -> Optional[int]:
+    """The page number the served page's own pager marks as current, or None
+    when it has no pager.
+
+    A number past the end of a listing is answered with the LAST page, and
+    its pager says so: `?page=401` of a four-page listing came back with
+    "Page 4" as the active item (capture of 2026-10-15). That is what lets a
+    run that lost page 4 to a timeout recognise page 5's answer as page 4's
+    rows (page_flow.fill_from_past_end)."""
+    if not html:
+        return None
+    a = BeautifulSoup(html, "html.parser").select_one(
+        "li.tm-pagination__list-item--active a[href]")
+    if a is None:
+        return None
+    return page_number_from_url(urljoin("https://www.transfermarkt.com/", a["href"]))
+
+
 def page_states_rows(html: Optional[str], mode: str) -> bool:
     """Whether the page itself shows rows the parser should have read.
 

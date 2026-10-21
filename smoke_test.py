@@ -4884,7 +4884,7 @@ class _ListingSession(_FakeSession):
 def _run_listing(modname, url, pages, html_for_page, extra_argv=()):
     """Run one entry point's real scrape() for --mode transfers with the
     fetch replaced by real captures. Returns (rc, meta, row skus)."""
-    from product_parser import next_page_link, page_number_from_url
+    from product_parser import next_page_link, page_number_from_url, served_page_number
     mod = importlib.import_module(modname)
     tmp = tempfile.mkdtemp(prefix="tm_listing_")
     out = os.path.join(tmp, "out")
@@ -4928,6 +4928,8 @@ def _run_listing(modname, url, pages, html_for_page, extra_argv=()):
                                      state="content")
                 oc.rows = parse_transfers(html, u, page_num=page_num)
                 oc.next_url = next_page_link(html, u)
+                if hasattr(oc, "served_page"):
+                    oc.served_page = served_page_number(html)
                 return oc
 
             patch("_fetch_one_page", fake_fetch)
@@ -5004,6 +5006,13 @@ def test_listing_end_and_repeated_pages(skips):
     seq = page_flow.PageSequence()
     seq.add(1, one1, None)
     verdict = seq.add(2, one2, None)
+    from product_parser import served_page_number
+    ok &= check("served_page_number: a page past the end names the last page "
+                "(?page=401 of a 4-page listing -> 4)",
+                served_page_number(FIX_TRANSFERS_PAGED_PAST_END) == 4)
+    ok &= check("...a real page names itself, and a page with no pager gives None",
+                served_page_number(FIX_TRANSFERS_PAGED_P2) == 2
+                and served_page_number(FIX_TRANSFERS_ONE_PAGE_P1) is None)
     ok &= check("page 2 repeating a page with no next link ends the listing",
                 verdict and verdict["stop_reason"] == page_flow.STOP_LISTING_ENDED
                 and verdict["same_as"] == 1)
@@ -5134,6 +5143,22 @@ def test_listing_end_and_repeated_pages(skips):
                            meta.get("listing_pages")),
                         rc == 0 and meta.get("stop_reason") == "listing_ended"
                         and meta.get("pages_completed") == 3
+                        and meta.get("pages_failed") == []
+                        and meta.get("listing_pages") == 3 and skus == want_paged)
+            # The LAST real page times out instead, and the pages past the
+            # end answer with its rows, their pager naming it current — every
+            # row is still in hand (the variant left partial on 2026-10-21).
+            names_3 = FIX_TRANSFERS_PAGED_PAST_END.replace(
+                'page=4" title="Page 4">4</a>', 'page=3" title="Page 3">3</a>')
+            last_timeout = lambda n: None if n == 3 else (paged[n] if n < 3 else names_3)
+            rc, meta, skus = _run_listing(modname, TRANSFERS_PAGED_URL, 6,
+                                          last_timeout, extra)
+            ok &= check("%s: the LAST real page times out, a page past the end "
+                        "serves it -> exit 0, listing_ended, all 8 rows "
+                        "(got rc=%s %s pages_failed=%s listing_pages=%s rows=%d)"
+                        % (label, rc, meta.get("stop_reason"), meta.get("pages_failed"),
+                           meta.get("listing_pages"), len(skus)),
+                        rc == 0 and meta.get("stop_reason") == "listing_ended"
                         and meta.get("pages_failed") == []
                         and meta.get("listing_pages") == 3 and skus == want_paged)
         rc, meta, skus = _run_listing(modname, TRANSFERS_PAGED_URL, 3, planted, extra)

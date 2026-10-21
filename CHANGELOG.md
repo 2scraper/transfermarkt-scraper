@@ -28,7 +28,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reported `partial`, exit 6, `pages_failed: [5]`, `listing_pages: 5`, with
   every row gathered. A page that repeats page J exactly, with nothing served
   in between, now puts the unserved pages between past the end too: exit 0,
-  `listing_ended`, `listing_pages: 4`.
+  `listing_ended`, `listing_pages: 4`. And when the LAST real page is the
+  one that times out, a later page that answers with it — its pager marking
+  that page current, which the site does for any number past the end — now
+  supplies its rows (`page_flow.fill_from_past_end`): the run ends
+  `listing_ended`, not `partial` with every row in hand.
 - **`--proxy-sessions` refused the `eu.proxy.rucaptcha.com` gateway.** Both
   brand domains front the same gateway (four sessions, four distinct exits,
   2026-10-21); `.proxy.rucaptcha.com` is accepted and the refusal names both.

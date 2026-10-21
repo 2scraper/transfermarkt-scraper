@@ -567,6 +567,41 @@ def listing_filter_meta(mode: str, url: Optional[str]) -> dict:
             "market_value_filter": "url" if floor is not None else "site_default"}
 
 
+def fill_from_past_end(outcomes) -> list:
+    """Give a page that was not served the rows a LATER page served for it.
+
+    Workers take pages past the end at once, and the site answers any of
+    them with the last page — its pager naming that page as current
+    (product_parser.served_page_number). So when page L failed (a timeout,
+    measured 2026-10-21 under --concurrency 4) and page L+1 came back saying
+    "I am page L", page L's rows were obtained after all. Its outcome takes
+    them, the later page then reads as a repeat of L, and the listing ends at
+    L complete — instead of `partial` with every row in hand.
+
+    Only a failed page is filled, and only from a page that names it
+    exactly. Returns the page numbers filled."""
+    by_num = {o.page_num: o for o in outcomes}
+    filled = []
+    for o in sorted(outcomes, key=lambda x: x.page_num):
+        served = getattr(o, "served_page", None)
+        if not o.ok or not served or served >= o.page_num:
+            continue
+        lost = by_num.get(served)
+        if lost is None or lost.ok:
+            continue
+        for attr in ("rows", "next_url", "state", "final_url", "served_page"):
+            setattr(lost, attr, getattr(o, attr, None))
+        for flag in ("load_failed", "parse_failed", "server_error"):
+            if hasattr(lost, flag):
+                setattr(lost, flag, False)
+        lost.blocked_by = None
+        filled.append(served)
+        logger.info("Page %d was not served, but page %d answered with it "
+                    "(its pager marks page %d current) — using those rows.",
+                    served, o.page_num, served)
+    return filled
+
+
 def settle_repeats(outcomes) -> PageSequence:
     """Run PageSequence over finished outcomes in page order — the concurrent
     path's version of the check the sequential loop makes as it goes. Pages

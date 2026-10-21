@@ -84,7 +84,7 @@ from captcha_solver import (detect_recaptcha_v3, detect_recaptcha_in_page,
 from product_parser import (parse_market_values, parse_club_squad,
                             parse_transfers, parse_player_detail,
                             detect_bot_challenge, page_states_rows, page_url,
-                            next_page_link,
+                            next_page_link, served_page_number,
                             site_host, is_supported_host, unsupported_reason,
                             HOSTS, player_url, club_squad_url,
                             MARKET_VALUES_URL, TRANSFERS_URL, transfers_url)
@@ -130,6 +130,9 @@ class PageOutcome:
     # decides whether a repeated page is the listing's end or a page
     # lost (page_flow.PageSequence).
     next_url: Optional[str] = None
+    # The page number the served page's own pager marks current: a number
+    # past the end is answered with the last page (page_flow.fill_from_past_end).
+    served_page: Optional[int] = None
     # The target answered 5xx on every try (page_flow.STOP_TARGET_HTTP_5XX).
     server_error: bool = False
 
@@ -794,6 +797,7 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
     outcome.rows = rows
     outcome.final_url = session.page.url
     outcome.next_url = next_page_link(html, outcome.final_url)
+    outcome.served_page = served_page_number(html)
     return outcome
 
 
@@ -974,6 +978,7 @@ def scrape(args) -> int:
                         args, pool, specs, concurrency,
                         known_keys=[r.sku for r in first.rows])
                     outcomes.extend(rest)
+                    page_flow.fill_from_past_end(outcomes)
                     pages = page_flow.settle_repeats(outcomes)
 
                     failed = [o for o in rest
