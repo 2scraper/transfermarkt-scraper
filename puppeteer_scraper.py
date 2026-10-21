@@ -176,24 +176,36 @@ class _Session:
         if self.remote:
             logger.info("Connecting to an existing browser over CDP: %s",
                         _mask_credentials(self.args.cdp_endpoint))
-            try:
-                self.browser = self.bridge.run(
-                    connect(browserWSEndpoint=self.args.cdp_endpoint,
-                            ignoreHTTPSErrors=True), timeout=CONNECT_TIMEOUT)
-                self.page = self.bridge.run(self.browser.newPage())
-            except Exception as e:  # noqa: BLE001 - pyppeteer's own connect
-                # failure isn't one well-known exception type (a websocket
-                # refusal, a TimeoutError from _AsyncBridge, ...), and this
-                # is the Scraping Browser API's OWN connection refusing us,
-                # not the target site -- exit 5, not an uncaught crash (1).
-                # See output_writer.RemoteAPIError and the identical guard
-                # in playwright_scraper.py's _connect_remote.
-                raise RemoteAPIError(
-                    f"could not connect to --cdp-endpoint "
-                    f"{_mask_credentials(self.args.cdp_endpoint)}: "
-                    f"{_mask_credentials(str(e))}\n"
-                    f"{page_flow.cdp_connect_hint(str(e))}"
-                ) from None
+            attempt = 0
+            while True:
+                attempt += 1
+                try:
+                    self.browser = self.bridge.run(
+                        connect(browserWSEndpoint=self.args.cdp_endpoint,
+                                ignoreHTTPSErrors=True), timeout=CONNECT_TIMEOUT)
+                    self.page = self.bridge.run(self.browser.newPage())
+                    break
+                except Exception as e:  # noqa: BLE001 - pyppeteer's own connect
+                    # failure isn't one well-known exception type (a websocket
+                    # refusal, a TimeoutError from _AsyncBridge, ...), and this
+                    # is the Scraping Browser API's OWN connection refusing us,
+                    # not the target site -- exit 5, not an uncaught crash (1).
+                    # See output_writer.RemoteAPIError and the identical guard
+                    # in playwright_scraper.py's _connect_remote, including
+                    # the retry: only an explicit refusal word is retried.
+                    wait = page_flow.cdp_retry_delay(str(e), attempt)
+                    if wait is not None:
+                        logger.warning("CDP connect refused (%s) — retrying in "
+                                       "%.0fs (retry %d).",
+                                       page_flow.cdp_refusal(str(e)), wait, attempt)
+                        time.sleep(wait)
+                        continue
+                    raise RemoteAPIError(
+                        f"could not connect to --cdp-endpoint "
+                        f"{_mask_credentials(self.args.cdp_endpoint)}: "
+                        f"{_mask_credentials(str(e))}\n"
+                        f"{page_flow.cdp_connect_hint(str(e))}"
+                    ) from None
             # Turn the Scraping Browser's own auto-solve on, exactly as
             # playwright_scraper._connect_remote does. Until v0.4.1 this
             # engine connected over CDP and then did NOT do this, so a run

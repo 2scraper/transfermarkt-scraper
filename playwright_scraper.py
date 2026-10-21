@@ -251,19 +251,33 @@ class _BrowserSession:
 def _connect_remote(pw, args):
     logger.info("Connecting to existing browser over CDP: %s",
                 _mask_credentials(args.cdp_endpoint))
-    try:
-        browser = pw.chromium.connect_over_cdp(args.cdp_endpoint, timeout=30000)
-    except (PWError, PWTimeout) as e:
-        # A RemoteAPIError, not a re-raised PWError: this is the Scraping
-        # Browser API's OWN connection refusing us, not the target site, and
-        # it needs to be exit 5 rather than falling through to an uncaught
-        # crash (1) — see output_writer.RemoteAPIError.
-        raise RemoteAPIError(
-            f"could not connect to --cdp-endpoint "
-            f"{_mask_credentials(args.cdp_endpoint)}: "
-            f"{_mask_credentials(str(e))}\n"
-            f"{page_flow.cdp_connect_hint(str(e))}"
-        ) from None
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            browser = pw.chromium.connect_over_cdp(args.cdp_endpoint, timeout=30000)
+            break
+        except (PWError, PWTimeout) as e:
+            # Only an explicit, immediate refusal is retried (see
+            # page_flow.cdp_retry_delay); a connect TIMEOUT is not.
+            wait = (None if isinstance(e, PWTimeout)
+                    else page_flow.cdp_retry_delay(str(e), attempt))
+            if wait is not None:
+                logger.warning("CDP connect refused (%s) — retrying in %.0fs "
+                               "(retry %d).", page_flow.cdp_refusal(str(e)),
+                               wait, attempt)
+                time.sleep(wait)
+                continue
+            # A RemoteAPIError, not a re-raised PWError: this is the Scraping
+            # Browser API's OWN connection refusing us, not the target site,
+            # and it needs to be exit 5 rather than falling through to an
+            # uncaught crash (1) — see output_writer.RemoteAPIError.
+            raise RemoteAPIError(
+                f"could not connect to --cdp-endpoint "
+                f"{_mask_credentials(args.cdp_endpoint)}: "
+                f"{_mask_credentials(str(e))}\n"
+                f"{page_flow.cdp_connect_hint(str(e))}"
+            ) from None
     context = browser.contexts[0] if browser.contexts else browser.new_context()
     page = context.new_page()
     # Counters, not just log lines. Measured 2026-09-17 on a live AWS WAF

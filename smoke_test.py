@@ -5453,6 +5453,66 @@ def test_cdp_connect_hint():
                     "sentence" % name,
                     "page_flow.cdp_connect_hint(" in src
                     and "usually means another run still" not in src)
+
+    # The refusal words the API put in the 500's body, 2026-10-21.
+    locked = busy + "\nprofile_locked"
+    exit_down = busy + "\nproxy_timeout"
+    r = page_flow.cdp_retry_delay
+    ok &= check("profile_locked is retried 3 times, waiting longer each time",
+                [r(locked, n) for n in (1, 2, 3, 4)] == [3.0, 6.0, 9.0, None])
+    ok &= check("proxy_timeout / proxy_error once",
+                r(exit_down, 1) == 3.0 and r(exit_down, 2) is None
+                and r(busy + " proxy_error", 1) == 3.0)
+    ok &= check("a host problem or a bare 500 is not retried",
+                r(dns, 1) is None and r(busy, 1) is None)
+    ok &= check("the hint names the refusal it saw",
+                "profile_locked" in h(locked) and "proxy_timeout" in h(exit_down))
+
+    try:
+        import playwright_scraper as ps
+    except ImportError:
+        return ok  # recorded as a skip by the engine groups
+    attempts = []
+
+    class _Ctx:
+        def new_page(self):
+            return type("P", (), {})()
+
+    class _Browser:
+        contexts = [_Ctx()]
+
+    def chromium(errors):
+        class _Chromium:
+            def connect_over_cdp(self, endpoint, timeout):
+                attempts.append(endpoint)
+                if errors:
+                    raise errors.pop(0)
+                return _Browser()
+        return type("PW", (), {"chromium": _Chromium()})()
+
+    saved_sleep = ps.time.sleep
+    ps.time.sleep = lambda s: None
+    args = type("A", (), {"cdp_endpoint": "ws" + "://h:9222", "no_autosolve": True})()
+    try:
+        attempts.clear()
+        ps._connect_remote(chromium([ps.PWError(locked), ps.PWError(locked)]), args)
+        ok &= check("playwright: two profile_locked refusals, then a free "
+                    "profile -> connected on the third attempt",
+                    len(attempts) == 3)
+        for label, err, want in (("ENOTFOUND", ps.PWError(dns), 1),
+                                 ("a connect timeout", ps.PWTimeout("Timeout 30000ms exceeded"), 1),
+                                 ("profile_locked that never clears", None, 4)):
+            attempts.clear()
+            errs = [err] if err is not None else [ps.PWError(locked) for _ in range(5)]
+            try:
+                ps._connect_remote(chromium(errs), args)
+                raised = False
+            except RemoteAPIError:
+                raised = True
+            ok &= check("playwright: %s -> exit-5 error after %d attempt(s) (got %d)"
+                        % (label, want, len(attempts)), raised and len(attempts) == want)
+    finally:
+        ps.time.sleep = saved_sleep
     return ok
 
 

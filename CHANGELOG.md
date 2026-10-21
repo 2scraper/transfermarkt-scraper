@@ -40,6 +40,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unresolvable host included. The hint now follows the error: host
   unreachable, 401 (credentials), or 500 (a busy `pid` or the profile's
   failed exit, `proxy_error`). Shared by Playwright and pyppeteer.
+- **A busy or exit-less Scraping Browser profile ended the run at once.**
+  The API refuses the WebSocket upgrade with HTTP 500 and one word in the
+  body; measured 2026-10-21 on fresh profiles: `profile_locked` right after
+  the previous run on that `pid` had ended gracefully, and `proxy_timeout`
+  from the profile's exit — the next attempt connected both times. Those
+  refusals are now retried (`profile_locked` up to 3 times after 3, 6 and
+  9 s; `proxy_timeout`/`proxy_error` once after 3 s) in Playwright and
+  pyppeteer, and the hint names the word. A connect timeout is still not
+  retried.
 - **`diff_runs` advised "Re-run the incomplete side" for two complete runs
   of different modes**, and called a squad row a "transfer row". The advice
   now follows the reason.

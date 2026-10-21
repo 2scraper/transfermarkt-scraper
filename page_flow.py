@@ -709,6 +709,36 @@ def pagination_is_addressable(mode: str, page1_url: str,
 # ---------------------------------------------------------------------------
 # Why a --cdp-endpoint connection failed
 # ---------------------------------------------------------------------------
+# The Scraping Browser API answers a refused WebSocket upgrade with HTTP 500
+# and ONE word in the body, which Playwright repeats in its error. Each is
+# immediate, not a timeout, so a short retry costs seconds, not the profile
+# (a retry that TIMES OUT is what holds a profile; see the README). Measured
+# 2026-10-21 on fresh profiles:
+#   profile_locked  the previous run on this pid had ended gracefully a
+#                   moment before; the next attempt (after it) connected.
+#   proxy_timeout   the profile's exit did not answer; the next run, on the
+#   proxy_error     same profile, connected and scraped.
+CDP_REFUSAL_RETRIES = {"profile_locked": (3, 3.0),
+                       "proxy_timeout": (1, 3.0),
+                       "proxy_error": (1, 3.0)}
+
+
+def cdp_refusal(error_text: str) -> Optional[str]:
+    """The refusal word in a failed CDP connect's error, if there is one."""
+    text = (error_text or "").lower()
+    return next((w for w in CDP_REFUSAL_RETRIES if w in text), None)
+
+
+def cdp_retry_delay(error_text: str, attempt: int) -> Optional[float]:
+    """Seconds to wait before connect attempt `attempt + 1`, or None to give
+    up. Grows per attempt so a lock released late is still caught."""
+    word = cdp_refusal(error_text)
+    if word is None:
+        return None
+    retries, delay = CDP_REFUSAL_RETRIES[word]
+    return delay * attempt if attempt <= retries else None
+
+
 def cdp_connect_hint(error_text: str) -> str:
     """The next step after a failed CDP connect, chosen by what the error
     says. One hint for every failure used to blame a busy profile even for a
@@ -725,6 +755,17 @@ def cdp_connect_hint(error_text: str) -> str:
         return ("The endpoint's host could not be reached — check the host and "
                 "port in --cdp-endpoint / TRANSFERMARKT_CDP_ENDPOINT and this "
                 "machine's network. Nothing reached the Scraping Browser API.")
+    word = cdp_refusal(text)
+    if word == "profile_locked":
+        return ("profile_locked: another run still holds this `pid` (one live "
+                "connection per profile), and it was still held after the "
+                "retries. Wait for that run to finish, or use a different pid "
+                "— one profile per parallel run.")
+    if word in ("proxy_timeout", "proxy_error"):
+        return ("%s: this profile's exit did not work (still after a retry). "
+                "Run again in a minute; if it persists, check the account's or "
+                "profile's proxy with `tools/browser_profile_client.py accounts` "
+                "/ `profiles`." % word)
     if "401" in text or "unauthorized" in text:
         return ("The Scraping Browser API refused the login or password in the "
                 "endpoint. Fetch a fresh one: python3 tools/browser_profile_client.py "
