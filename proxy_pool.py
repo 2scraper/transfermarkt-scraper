@@ -155,7 +155,7 @@ def mask(url: Optional[str]) -> str:
         tail = ""
         try:
             session = _SESSION_RE.search(parsed.username or "")
-            if session and host.endswith(_GATEWAY_SUFFIX):
+            if session and host.endswith(_GATEWAY_SUFFIXES):
                 tail = f" ({session.group(0).lstrip('-')})"
         except Exception:  # noqa: BLE001 -- never let the label break the mask
             tail = ""
@@ -303,7 +303,10 @@ class ProxyPool:
 # twenty names for one IP: a pool that looks like a pool, logs like a pool,
 # and quietly concentrates every request on one exit. That is worse than a
 # file, which is why the check comes first and why the number is recorded.
-_GATEWAY_SUFFIX = ".proxy.2captcha.com"
+# Both brand domains front the same gateway: 2026-10-21, four sessions on
+# eu.proxy.rucaptcha.com gave four distinct exit addresses, as on
+# .proxy.2captcha.com. Refusing the first sent its users to a hand-made file.
+_GATEWAY_SUFFIXES = (".proxy.2captcha.com", ".proxy.rucaptcha.com")
 _SESSION_RE = re.compile(r"-session-[A-Za-z0-9]+")
 _SESSTIME_RE = re.compile(r"-sessTime-\d+")
 # Nine characters, matching the ids the vendor's own exported list uses.
@@ -319,7 +322,7 @@ def is_2captcha_gateway(url: Optional[str]) -> bool:
         host = (urlparse(url).hostname or "").lower()
     except ValueError:
         return False
-    return host.endswith(_GATEWAY_SUFFIX)
+    return host.endswith(_GATEWAY_SUFFIXES)
 
 
 def _session_id(rng: random.Random) -> str:
@@ -363,7 +366,8 @@ def mint_sessions(url: str, count: int, rng: Optional[random.Random] = None) -> 
     if not is_2captcha_gateway(url):
         raise ProxyError(
             "--proxy-sessions only applies to a 2Captcha proxy gateway "
-            f"(a host under {_GATEWAY_SUFFIX}); the URL given is not one. "
+            f"(a host under {' or '.join(_GATEWAY_SUFFIXES)}); the URL given "
+            "is not one. "
             "Use --proxy-file for proxies from anywhere else.")
     rng = rng or random.Random()
     seen, out = set(), []

@@ -156,6 +156,7 @@ def _check_comparable(args) -> bool:
     market-values/club-squad/player/transfers rather than listing/product.
     """
     problems = []
+    advice = []
     modes = {}
     for label, path in (("--old", args.old), ("--new", args.new)):
         status, meta = _run_status(path)
@@ -173,21 +174,35 @@ def _check_comparable(args) -> bool:
                 f"{label} ({path}) was a {status!r} run — stopped after "
                 f"{meta.get('pages_completed')} of {meta.get('pages_requested')} "
                 f"page(s), reason {meta.get('stop_reason')!r}")
+            if "incomplete" not in advice:
+                advice.append("incomplete")
     if len(set(modes.values())) > 1:
+        # Said of every pair, not only market-values vs transfers: two
+        # complete runs of different modes read different pages (the ranking
+        # vs one club's squad), so their rows are not the same population.
         problems.append(
-            f"the two runs are different modes ({modes}). A market-values "
-            f"row and a transfer row carry different fields, so "
-            f"added/removed would describe the mode change rather than the "
-            f"data.")
+            f"the two runs are different modes ({modes}): they read "
+            f"different pages, so added/removed would describe the mode "
+            f"change rather than the data.")
+        advice.append("modes")
     if not problems:
         return True
 
     print("[!] Refusing to diff these two runs:")
     for line in problems:
         print(f"      {line}")
-    print("    Re-run the incomplete side, or pass --force to compare "
-          "anyway (added/removed will include rows that were simply never "
-          "fetched).")
+    # The advice follows the reason. One fixed line said "Re-run the
+    # incomplete side" for two complete runs of different modes (2026-10-21).
+    if "modes" in advice:
+        print("    Compare two runs of the same --mode, or pass --force to "
+              "compare anyway (every row of each side will read as added or "
+              "removed).")
+    if "incomplete" in advice:
+        print("    Re-run the incomplete side, or pass --force to compare "
+              "anyway (added/removed will include rows that were simply never "
+              "fetched).")
+    if not advice:
+        print("    Pass --force to compare anyway.")
     return False
 
 

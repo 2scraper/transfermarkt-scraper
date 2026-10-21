@@ -1561,19 +1561,28 @@ def test_page_flow():
     ok &= check("...and the same holds with no next-link at all (nothing "
                 "contradicts the construction)",
                 page_flow.pagination_is_addressable("market-values", MARKET_VALUES_URL, None))
-    # The rare gallery shape (a real capture, 2026-09-10) still correctly
-    # falls back to link-chaining: its next-link disagrees with what
-    # page_url() would build.
+    # The gallery shape (a real capture, 2026-09-10). Chaining its doubled
+    # link answered 404 and ended 3 of 8 runs at page 1 on 2026-10-21, while
+    # ?page=N in the same sessions served the real pages — so market-values
+    # plans ?page=N even then.
     _gallery_next_link = (
         "https://www.transfermarkt.com/spieler-statistik/wertvollstespieler/"
         "marktwertetop/plus/0/galerie/0ausrichtung%3DSturm%26spielerposition_id"
         "%3Dalle%26altersklasse%3Dalle%26jahrgang%3D0%26land_id%3D72%26"
         "kontinent_id%3D0%26yt0%3DShow/page/8/page/3//page/2")
-    ok &= check("...but a gallery-shaped next-link (real capture) is "
-                "correctly read as NOT addressable, falling back to "
-                "chaining the site's own link",
-                not page_flow.pagination_is_addressable(
+    ok &= check("a gallery-shaped next-link (real capture) no longer sends "
+                "market-values down the site's own 404ing link: ?page=N is "
+                "planned instead",
+                page_flow.pagination_is_addressable(
                     "market-values", MARKET_VALUES_URL, _gallery_next_link))
+    ok &= check("...and the plan for that run is the plain ?page=N, never the "
+                "gallery link",
+                page_url(MARKET_VALUES_URL, 2).endswith("?page=2")
+                and "/page/" not in page_url(MARKET_VALUES_URL, 2))
+    ok &= check("...while another mode with a path-encoded page still chains "
+                "(the gallery fix is measured on market-values only)",
+                not page_flow.pagination_is_addressable(
+                    "transfers", TRANSFERS_URL, _gallery_next_link))
 
     # transfers: addressable when the site's own next-link agrees with the
     # constructed page-2 URL; not addressable (falls back to link-chaining)
@@ -2661,6 +2670,18 @@ def test_minted_proxy_sessions():
                 "to it by accident -- the session segment is this vendor's "
                 "convention, not a general proxy feature",
                 not proxy_pool.is_2captcha_gateway(OTHER))
+    ok &= check("the same gateway under its other brand domain "
+                "(eu.proxy.rucaptcha.com) is recognised too -- it was refused, "
+                "measured 2026-10-21 with distinct exits per session",
+                proxy_pool.is_2captcha_gateway(
+                    url("acct-zone-custom-region-DE-session-AAAAAAAAA-sessTime-10:pw@eu.proxy.rucaptcha.com:2334")))
+    try:
+        proxy_pool.mint_sessions(OTHER, 2)
+        refusal = ""
+    except proxy_pool.ProxyError as e:
+        refusal = str(e)
+    ok &= check("...and the refusal for a non-gateway names both domains",
+                ".proxy.2captcha.com" in refusal and ".proxy.rucaptcha.com" in refusal)
     ok &= check("a malformed URL is not mistaken for a gateway",
                 not proxy_pool.is_2captcha_gateway("http://u:p@h:notaport")
                 and not proxy_pool.is_2captcha_gateway(""))
@@ -2870,6 +2891,36 @@ def test_browser_profile_client():
                 isinstance(bpc.safe(response)["data"], dict)
                 and set(bpc.safe(response)["data"]) == {"0", "1"})
 
+    # `accounts` listed every dict in the response, at any depth: on a live
+    # account (2026-10-21) 21 lines mixing accounts, their proxy accounts,
+    # profiles and seven identical `id=1 name=2captcha` projects, without the
+    # proxyMode the README tells the reader to check there.
+    import contextlib
+    import io
+    nested = json.loads(json.dumps(response))
+    for acc in nested["data"].values():
+        acc["project"] = {"id": 1, "code": "2captcha", "name": "2captcha"}
+        acc["profilesCount"] = 2
+    saved_call = bpc._call
+    bpc._call = lambda method, path, key, **kw: nested
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            bpc.cmd_accounts(type("A", (), {"raw": False})(), "k")
+    finally:
+        bpc._call = saved_call
+    listing = out.getvalue()
+    rows = [l for l in listing.splitlines() if re.match(r"\s+\d+\s", l)]
+    ok &= check("accounts lists the accounts only: one row each, no nested "
+                "profile or project (got %d row(s))" % len(rows),
+                len(rows) == 2 and "abc123" not in listing
+                and "2captcha" not in listing)
+    ok &= check("...with proxyMode beside each id, as the README promises",
+                any("96418" in l and "none" in l for l in rows)
+                and any("96419" in l and "our_proxy" in l for l in rows))
+    ok &= check("...and no credential in it",
+                PASSWORD not in listing and LOGIN not in listing)
+
     # mask_url must never raise: it is the last thing between a password and
     # a log, and it is called exactly when the value is already suspect.
     for bad in ("", "not a url", "ws://", "ws://[oops", "ws://u:p@h:notaport"):
@@ -2992,9 +3043,11 @@ def test_scraper_api_client():
         # page_flow.pagination_is_addressable off page 1's own next-link
         # rather than assuming either way. Two fixtures, one per shape:
 
-        # 1. The rare "gallery" shape (a real capture, 2026-09-10): page 1's
-        # own next-link does NOT match what page_url() would build -- exit 6
-        # (partial), only page 1 fetched.
+        # 1. The "gallery" shape (a real capture, 2026-09-10): page 1's own
+        # next-link is the doubled path that answers 404. It used to end the
+        # run at page 1 (exit 6, stateless_pagination_unavailable); since
+        # ?page=N serves the real page 2 in such sessions (measured
+        # 2026-10-21), page 2 is fetched by the constructed URL instead.
         gallery_next = ("https://www.transfermarkt.com/spieler-statistik/wertvollstespieler/"
                         "marktwertetop/plus/0/galerie/0ausrichtung%3DSturm%26spielerposition_id"
                         "%3Dalle%26altersklasse%3Dalle%26jahrgang%3D0%26land_id%3D72%26"
@@ -3006,21 +3059,24 @@ def test_scraper_api_client():
         gallery_calls = []
         def _gallery_fetch(args, url, timeout):
             gallery_calls.append(url)
-            return fixture_gallery, 200, {}
+            if url == a.url:
+                return fixture_gallery, 200, {}
+            return FIX_CLUB_SQUAD, 200, {}
         sac.fetch_html = _gallery_fetch
         a = _FakeArgs(mode="market-values", pages=2,
                      url="https://www.transfermarkt.com/spieler-statistik/wertvollstespieler/marktwertetop",
                      out=os.path.join(tmpdir, "out_mv_gallery"))
         rc = sac.scrape(a)
         ok &= check("--mode market-values --pages 2 against a gallery-shaped "
-                    "next-link is exit 6 (partial), only page 1 fetched",
-                    rc == EXIT_PARTIAL and len(gallery_calls) == 1)
+                    "next-link fetches page 2 by ?page=2, never by the 404ing "
+                    "gallery link",
+                    len(gallery_calls) == 2 and gallery_calls[1].endswith("?page=2")
+                    and "/page/" not in gallery_calls[1])
         meta = json.load(open(a.out + ".meta.json", encoding="utf-8"))
-        ok &= check("...and the sidecar says why (stop_reason, not silently "
-                    "'completed')",
-                    meta["stop_reason"] == "stateless_pagination_unavailable"
-                    and meta["status"] == "partial"
-                    and meta["pages_completed"] == 1)
+        ok &= check("...and it is a complete run (was partial, "
+                    "stateless_pagination_unavailable)",
+                    rc == 0 and meta["status"] == "complete"
+                    and meta["pages_completed"] == 2)
 
         # 2. The common, plain-?page=N shape: page 1's own next-link DOES
         # match page_url()'s construction, so this engine actually fetches
@@ -4227,6 +4283,23 @@ def test_atomic_writes_and_modes():
         write_run_meta(meta, {"status": "complete"})
         ok &= check("the run-metadata sidecar goes through the same writer",
                     json.load(open(meta + ".meta.json"))["status"] == "complete")
+        # --out live/x before `live/` existed: the run gathered its rows and
+        # then died with FileNotFoundError (exit 1) at the write, losing them
+        # (measured 2026-10-21 on af2c896). The write makes the directory.
+        nested = os.path.join(tmp, "not", "yet", "there", "out")
+        try:
+            save(good, nested, "both")
+            written = all(os.path.exists(nested + s) for s in (".json", ".csv"))
+        except OSError:
+            written = False
+        ok &= check("--out into a directory that does not exist yet creates it "
+                    "instead of losing the gathered rows", written)
+        try:
+            write_run_meta(os.path.join(tmp, "meta_dir", "m"), {"status": "complete"})
+            meta_written = True
+        except OSError:
+            meta_written = False
+        ok &= check("...and the sidecar likewise", meta_written)
         src = open(os.path.join(REPO_ROOT, "output_writer.py"), encoding="utf-8").read()
         ok &= check("no writer in output_writer.py truncates its target in place",
                     'open(path, "w"' not in src.replace('`open(path, "w")`', ""))
@@ -4763,6 +4836,9 @@ def _run_listing(modname, url, pages, html_for_page, extra_argv=()):
 
             def fake_fetch(sess, a, pool, page_num, u):
                 html = html_for_page(page_number_from_url(u))
+                if html is None:
+                    # A page that timed out: not served at all.
+                    return mod.PageOutcome(page_num=page_num, url=u, load_failed=True)
                 if hasattr(sess, "page"):
                     sess.page.html, sess.page.url = html, u
                 session.page.html, session.page.url = html, u
@@ -4862,6 +4938,34 @@ def test_listing_end_and_repeated_pages(skips):
     ok &= check("page_repeated is not complete; listing_ended is",
                 page_flow.STOP_PAGE_REPEATED not in COMPLETE_STOP_REASONS
                 and page_flow.STOP_LISTING_ENDED in COMPLETE_STOP_REASONS)
+    # A page past the end that was never served (it timed out), followed by
+    # one that repeats the last page: the site answers ANY number past the
+    # end with the last page, so the unserved one was past the end too.
+    # Measured 2026-10-21, --concurrency 4: pages 1-4 served, 5 timed out,
+    # 6 = page 4 -> the run reported partial, pages_failed [5],
+    # listing_pages 5, with every row gathered.
+    seq = page_flow.PageSequence()
+    seq.add(1, p1, "next")
+    seq.add(2, p2, "next")
+    seq.add(3, last, None)
+    verdict = seq.add(5, last, None)
+    ok &= check("a repeat of the last page after an unserved page ends the "
+                "listing at the page it repeats",
+                verdict and verdict["stop_reason"] == page_flow.STOP_LISTING_ENDED
+                and verdict["same_as"] == 3)
+    ok &= check("...and the unserved page between them is not counted (so its "
+                "failure cannot make the run partial)",
+                seq.counts(3) and not seq.counts(4) and not seq.counts(5))
+    ok &= check("...and listing_pages is the last real page, not the page "
+                "before the repeat",
+                seq.meta() == {"repeated_page": 5, "repeat_of_page": 3,
+                               "listing_pages": 3})
+    seq = page_flow.PageSequence()
+    seq.add(1, p1, "next")
+    seq.add(2, p2, "next")
+    ok &= check("an unserved page before a repeat of a page that LINKED ONWARD "
+                "is still a page not served",
+                seq.add(4, p2, "next")["stop_reason"] == page_flow.STOP_PAGE_REPEATED)
     seq = page_flow.PageSequence()
     seq.add(1, p1, "next")
     ok &= check("a page with new rows is not a repeat", seq.add(2, p2, "next") is None)
@@ -4935,6 +5039,21 @@ def test_listing_end_and_repeated_pages(skips):
                     and meta.get("pages_completed") == 3
                     and meta.get("repeated_page") == 4 and meta.get("repeat_of_page") == 3
                     and skus == want_paged)
+        if extra:
+            # Workers take pages past the end at once; one of them timing
+            # out must not turn a complete listing partial (2026-10-21).
+            past_end_timeout = lambda n: None if n == 4 else four(n)
+            rc, meta, skus = _run_listing(modname, TRANSFERS_PAGED_URL, 6,
+                                          past_end_timeout, extra)
+            ok &= check("%s: a timeout on a page PAST the end -> still exit 0, "
+                        "listing_ended, 3 pages, all 8 rows, no failed page "
+                        "(got rc=%s %s pages_failed=%s listing_pages=%s)"
+                        % (label, rc, meta.get("stop_reason"), meta.get("pages_failed"),
+                           meta.get("listing_pages")),
+                        rc == 0 and meta.get("stop_reason") == "listing_ended"
+                        and meta.get("pages_completed") == 3
+                        and meta.get("pages_failed") == []
+                        and meta.get("listing_pages") == 3 and skus == want_paged)
         rc, meta, skus = _run_listing(modname, TRANSFERS_PAGED_URL, 3, planted, extra)
         ok &= check("%s: page 1 links to page 2 but page 2 serves page 1 -> "
                     "exit 6, page_repeated, partial (got rc=%s %s %s)"
@@ -5271,6 +5390,124 @@ def test_min_value_flag(skips):
     return ok
 
 
+def test_diff_refusal_advice():
+    group("diff_runs: the refusal's advice follows its reason")
+    ok = True
+    import argparse
+    import contextlib
+    import io
+    import diff_runs
+    tmp = tempfile.mkdtemp(prefix="tm_diffadv_")
+    try:
+        def run(name, mode, status):
+            base = os.path.join(tmp, name)
+            write_json([Player(sku="1", title="A")], base + ".json")
+            write_run_meta(base, {"status": status, "mode": mode,
+                                  "pages_completed": 1, "pages_requested": 1,
+                                  "stop_reason": "completed"})
+            return base + ".json"
+
+        def advice(old, new):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                accepted = diff_runs._check_comparable(argparse.Namespace(old=old, new=new))
+            return accepted, out.getvalue()
+
+        mv = run("mv", "market-values", "complete")
+        cs = run("cs", "club-squad", "complete")
+        part = run("part", "market-values", "partial")
+        accepted, text = advice(mv, cs)
+        ok &= check("two COMPLETE runs of different modes: refused, advised to "
+                    "compare the same --mode, not to re-run an 'incomplete side'",
+                    not accepted and "same --mode" in text
+                    and "incomplete side" not in text)
+        ok &= check("...and not described as a transfer row when neither side "
+                    "is transfers", "transfer row" not in text)
+        accepted, text = advice(mv, part)
+        ok &= check("a partial run of the same mode still gets the re-run advice",
+                    not accepted and "incomplete side" in text and "same --mode" not in text)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return ok
+
+
+def test_cdp_connect_hint():
+    group("a failed --cdp-endpoint connect names the likely cause")
+    ok = True
+    # The live error texts of 2026-10-21 (credentials removed).
+    dns = ("BrowserType.connect_over_cdp: WebSocket error: getaddrinfo "
+           "ENOTFOUND broken.invalid")
+    busy = "BrowserType.connect_over_cdp: WebSocket error: ws://*** 500 Internal Server Error"
+    auth = "WebSocket error: ws://*** 401 Unauthorized"
+    h = page_flow.cdp_connect_hint
+    ok &= check("an unresolvable host is a host problem, not a busy profile",
+                "could not be reached" in h(dns) and "500" not in h(dns)
+                and "pid" not in h(dns))
+    ok &= check("a 500 names both causes met live: a busy pid and a failed exit",
+                "pid" in h(busy) and "proxy_error" in h(busy))
+    ok &= check("a 401 points at the credentials and how to fetch fresh ones",
+                "login or password" in h(auth) and "--write-env" in h(auth))
+    for name in ("playwright_scraper.py", "puppeteer_scraper.py"):
+        src = open(os.path.join(REPO_ROOT, name), encoding="utf-8").read()
+        ok &= check("%s takes its connect hint from page_flow, not a fixed "
+                    "sentence" % name,
+                    "page_flow.cdp_connect_hint(" in src
+                    and "usually means another run still" not in src)
+    return ok
+
+
+def test_concurrency_refused_over_cdp(skips):
+    group("--concurrency over a Scraping Browser endpoint is refused (exit 2)")
+    ok = True
+    try:
+        import playwright_scraper as ps
+    except ImportError as e:
+        skips.append("playwright_scraper --concurrency/CDP refusal (%s)" % e)
+        return ok
+    import contextlib
+    import io
+    names = set(env_config.ENV_KEYS) | {"TWOCAPTCHA_KEY"}
+    saved_env = {k: os.environ.get(k) for k in names}
+    saved_argv = sys.argv
+
+    def run(argv, endpoint):
+        for k in names:
+            os.environ.pop(k, None)
+        if endpoint:
+            os.environ["TRANSFERMARKT_CDP_ENDPOINT"] = endpoint
+        sys.argv = ["playwright_scraper.py"] + argv
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                ps.parse_args()
+            return 0, err.getvalue()
+        except SystemExit as e:
+            return e.code, err.getvalue()
+
+    try:
+        # README: "refused outright with --cdp-endpoint"; it was a warning and
+        # a single-worker run, exit 0 (measured 2026-10-21).
+        endpoint = "ws" + "://h" + ":9222"
+        rc, err = run(["--mode", "transfers", "--concurrency", "3"], endpoint)
+        ok &= check("--concurrency 3 with the endpoint from the environment "
+                    "-> exit 2 before any browser starts (got %s)" % rc,
+                    rc == 2 and "one live connection" in err)
+        rc, _ = run(["--mode", "transfers", "--concurrency", "3"], None)
+        ok &= check("...while --concurrency 3 without an endpoint still parses",
+                    rc == 0)
+        rc, _ = run(["--mode", "transfers"], endpoint)
+        ok &= check("...and the endpoint without --concurrency still parses",
+                    rc == 0)
+    finally:
+        sys.argv = saved_argv
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    return ok
+
+
 def main() -> int:
     ok = True
     # Checks that could not run because an optional engine library is absent.
@@ -5336,6 +5573,9 @@ def main() -> int:
     ok &= test_listing_end_and_repeated_pages(skips)
     ok &= test_target_5xx_is_a_server_error(skips)
     ok &= test_min_value_flag(skips)
+    ok &= test_concurrency_refused_over_cdp(skips)
+    ok &= test_cdp_connect_hint()
+    ok &= test_diff_refusal_advice()
 
     print()
     if _failures:

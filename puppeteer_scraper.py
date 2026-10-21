@@ -192,10 +192,7 @@ class _Session:
                     f"could not connect to --cdp-endpoint "
                     f"{_mask_credentials(self.args.cdp_endpoint)}: "
                     f"{_mask_credentials(str(e))}\n"
-                    f"A Scraping Browser profile allows ONE live connection "
-                    f"at a time, so this usually means another run still "
-                    f"holds this `pid`. Wait for it to finish, or use a "
-                    f"different pid."
+                    f"{page_flow.cdp_connect_hint(str(e))}"
                 ) from None
             # Turn the Scraping Browser's own auto-solve on, exactly as
             # playwright_scraper._connect_remote does. Until v0.4.1 this

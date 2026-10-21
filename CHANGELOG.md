@@ -4,6 +4,46 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+> **Behaviour changes:**
+>
+> - **`--concurrency` over `--cdp-endpoint` is refused (exit 2)**, also when
+>   the endpoint comes from `TRANSFERMARKT_CDP_ENDPOINT` in `.env`. It used to
+>   warn "ignored" and run one worker, exit 0, while the README said it was
+>   refused. For parallel Scraping Browser runs use one profile per run.
+> - **`--mode market-values --pages N` fetches `?page=N` even when page 1's
+>   next-link is the gallery shape.** Following that link answered 404 and
+>   ended 3 of 8 runs at page 1 with exit 6 on 2026-10-21; `?page=N` served
+>   the real pages in every gallery session measured. In
+>   `scraper_api_client.py` the same run is now complete instead of
+>   `stateless_pagination_unavailable`.
+
+### Fixed
+
+- **`--out` into a directory that does not exist lost the run.** The rows
+  were gathered, then the write died with `FileNotFoundError` (exit 1). The
+  writer now creates the directory (outputs, sidecar and `diff_runs --out`).
+- **A timeout on a page past the listing's end made a complete run
+  partial.** Under `--concurrency` workers take pages beyond the end at once;
+  measured 2026-10-21 (4 workers): pages 1-4 served, 5 timed out, 6 = page 4,
+  reported `partial`, exit 6, `pages_failed: [5]`, `listing_pages: 5`, with
+  every row gathered. A page that repeats page J exactly, with nothing served
+  in between, now puts the unserved pages between past the end too: exit 0,
+  `listing_ended`, `listing_pages: 4`.
+- **`--proxy-sessions` refused the `eu.proxy.rucaptcha.com` gateway.** Both
+  brand domains front the same gateway (four sessions, four distinct exits,
+  2026-10-21); `.proxy.rucaptcha.com` is accepted and the refusal names both.
+- **`tools/browser_profile_client.py accounts` listed every dict in the
+  response** — 21 lines for 4 accounts, mixing in proxy accounts, profiles
+  and projects, without `proxyMode`. It now prints one row per account:
+  id, proxyMode, country, profile count, name.
+- **A failed CDP connect blamed a busy profile for any error**, an
+  unresolvable host included. The hint now follows the error: host
+  unreachable, 401 (credentials), or 500 (a busy `pid` or the profile's
+  failed exit, `proxy_error`). Shared by Playwright and pyppeteer.
+- **`diff_runs` advised "Re-run the incomplete side" for two complete runs
+  of different modes**, and called a squad row a "transfer row". The advice
+  now follows the reason.
+
 ### Changed
 
 - CI only: the canary now runs weekly (Mondays 07:37 UTC) and on a manual dispatch, with its optional secrets `TRANSFERMARKT_CDP_ENDPOINT`, `TRANSFERMARKT_PROXY` passed on every run; the daily schedule is removed.

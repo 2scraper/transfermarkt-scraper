@@ -262,9 +262,7 @@ def _connect_remote(pw, args):
             f"could not connect to --cdp-endpoint "
             f"{_mask_credentials(args.cdp_endpoint)}: "
             f"{_mask_credentials(str(e))}\n"
-            f"A Scraping Browser profile allows ONE live connection at a "
-            f"time, so a 500 here usually means another run still holds this "
-            f"`pid`. Wait for it to finish, or use a different pid."
+            f"{page_flow.cdp_connect_hint(str(e))}"
         ) from None
     context = browser.contexts[0] if browser.contexts else browser.new_context()
     page = context.new_page()
@@ -915,11 +913,6 @@ def scrape(args) -> int:
                         "or there is only one page (club-squad/player).",
                         args.mode)
             concurrency = 1
-        elif args.cdp_endpoint:
-            logger.warning("--concurrency is ignored with --cdp-endpoint: "
-                           "the Scraping Browser API allows one live "
-                           "connection per profile.")
-            concurrency = 1
         elif not pool:
             logger.warning("--concurrency %d with no proxy pool: every "
                            "worker leaves from the SAME address. Pass "
@@ -1198,6 +1191,17 @@ def parse_args():
         if args.mode != "transfers":
             p.error("--min-value applies to --mode transfers only")
         args.url = transfers_url(args.min_value, base_url=args.url)
+
+    # Refused, not quietly ignored, as the README says: one Scraping Browser
+    # profile holds ONE live connection, so N workers cannot share it.
+    # Checked after the environment, because the endpoint usually comes
+    # from TRANSFERMARKT_CDP_ENDPOINT in .env rather than the command line.
+    if args.concurrency > 1 and args.cdp_endpoint:
+        p.error("--concurrency %d cannot run over --cdp-endpoint (here "
+                "possibly TRANSFERMARKT_CDP_ENDPOINT from .env): a Scraping "
+                "Browser profile allows one live connection. For parallel "
+                "fetching use several profiles, one run each, or drop "
+                "--concurrency." % args.concurrency)
 
     if not is_supported_host(args.url):
         why = unsupported_reason(args.url)

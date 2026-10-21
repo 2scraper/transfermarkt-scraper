@@ -256,12 +256,29 @@ def table(data, columns, empty):
 
 
 def cmd_accounts(args, key):
+    """One row per account. `table()` walked every dict in the response, so
+    each account's nested project, proxy and profile came out as rows of
+    their own: 21 lines for 4 accounts on 2026-10-21, the account to pick
+    unmarked among them, and no proxyMode — the first thing to check."""
     data = _call("GET", "/browser/accounts", key, params={"key": key})
     if args.raw:
         print(json.dumps(safe(data), indent=2, ensure_ascii=False))
         return
-    table(data, ["id", "login", "name"], "no accounts")
-    print("\nUse the id as --account-id.")
+    items = data.get("data") if isinstance(data, dict) else None
+    if isinstance(items, dict):
+        items = list(items.values())
+    accounts = [a for a in (items or []) if isinstance(a, dict) and "id" in a]
+    if not accounts:
+        table(data, ["id", "login", "name"], "no accounts")
+        return
+    print("  %-11s %-10s %-8s %-12s %s" % ("account id", "proxyMode", "country",
+                                           "profiles", "name"))
+    for a in accounts:
+        print("  %-11s %-10s %-8s %-12s %s" % (
+            a.get("id"), a.get("proxyMode") or "-", a.get("country") or "-",
+            a.get("profilesCount", "-"), a.get("name") or ""))
+    print("\nPass the number from the 'account id' column as --account-id. "
+          "proxyMode 'none' means a profile there has no exit (see README).")
 
 
 def cmd_proxy_accounts(args, key):

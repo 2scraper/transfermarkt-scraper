@@ -225,6 +225,9 @@ def _atomic(path: str, newline: Optional[str] = None):
     * The temp file goes in the target's own directory, because `os.replace`
       is atomic only within one filesystem.
     * `fsync` before the rename makes the bytes durable, not merely visible.
+    * The directory is created if it is missing: `--out live/x` before
+      `live/` existed used to gather every row and then die here with
+      FileNotFoundError (exit 1), losing them (measured 2026-10-21).
     * `newline` is passed through because the csv module needs `newline=""`.
     * The mode is what `open()` would have given: an existing file keeps its
       own mode, a new one gets `0o666 & ~umask`. `NamedTemporaryFile`
@@ -232,6 +235,7 @@ def _atomic(path: str, newline: Optional[str] = None):
       output would be readable by its owner alone.
     """
     directory = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(directory, exist_ok=True)
     handle = tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", newline=newline, dir=directory,
         prefix=os.path.basename(path) + ".", suffix=".tmp", delete=False)

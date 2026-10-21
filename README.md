@@ -49,7 +49,8 @@ python3 playwright_scraper.py --mode market-values
 # A club's full squad — id is transfermarkt's own numeric club id
 python3 playwright_scraper.py --mode club-squad --club-id 281 --season 2025
 
-# The latest-transfers ledger, up to 3 pages (safe to run with --concurrency).
+# The latest-transfers ledger, up to 3 pages, 3 workers (a local browser:
+# over --cdp-endpoint --concurrency is refused — one profile, one connection).
 # The default view is filtered to players valued EUR 500k+ and can fit on one
 # page; see "How deep that listing goes" below.
 python3 playwright_scraper.py --mode transfers --pages 3 --concurrency 3
@@ -187,7 +188,7 @@ ever ships a live one — not the README, not `.env.example`, not a workflow.
 every profile, and this repo ships the client that fetches it:
 
 ```bash
-python3 tools/browser_profile_client.py accounts                  # ids and proxyMode
+python3 tools/browser_profile_client.py accounts                  # one row per account: id, proxyMode, profiles
 python3 tools/browser_profile_client.py use --account-id N --write-env
 ```
 
@@ -260,7 +261,7 @@ ignored the variable.
 
 ---
 
-## The gallery pagination trap (market-values) — rare, not the default
+## The gallery pagination trap (market-values) — and how it is handled
 
 First measured **2026-09-10** against
 `/spieler-statistik/wertvollstespieler/marktwertetop`, and originally
@@ -292,8 +293,21 @@ independently addressable, same as transfers.** Only when page 1's own
 next-link disagrees (the rare gallery shape) does this scraper fall back to
 chaining the site's own pagination link one page at a time **inside a
 single browser session**, exactly as before — the fallback did not change,
-only when it engages did. `--mode market-values --pages N` with `N > 1`
-uses whichever path page 1 says to use; `--concurrency` remains
+only when it engages did.
+
+> **Corrected 2026-10-21.** The gallery shape is not rare, and chaining it
+> does not work. It appeared on **3 of 8** market-values runs that day (a
+> local browser and the Scraping Browser alike), and its link —
+> `…/page/10//page/2` — answered 404 each time, so every one of those runs
+> stopped at page 1 with exit 6. In the same sessions the plain `?page=2`
+> and `?page=3` served the real pages (25 rows each, 0 players shared with
+> page 1 or each other; 3 of 3 gallery sessions). Since then market-values
+> **ignores a gallery next-link and fetches `?page=N`** — the log says so
+> ("page 1's next-link is the gallery shape …") — and the repeated-page
+> check below still reports a page the site did not serve.
+
+`--mode market-values --pages N` with `N > 1` therefore always uses
+`?page=N`; `--concurrency` remains
 `transfers`-only regardless (see Engines below) — not because this mode is
 usually unaddressable, but because running several workers concurrently
 against a mode that can rarely switch shape mid-run is untested here.
@@ -552,12 +566,8 @@ all four page kinds returned complete, current HTML with no challenge markup
 `product_parser`'s own docstring). `--cdp-url` is wired in for the day that
 stops being true, but this repo has not needed it.
 
-Two things it cannot do that the browser engines can:
+One thing it cannot do that the browser engines can:
 
-- **No `--mode market-values --pages N > 1`.** That mode's pagination needs
-  a stateful browser session (see "the gallery pagination trap" above); a
-  stateless HTTP client cannot chain it. Asking for more than page 1 here is
-  exit `6` (partial), not a silent short result.
 - **No `--fingerprint`.** Fingerprint spoofing patches a live browser
   context; there is no browser context here to patch (route through
   `--cdp-url` if a browser identity matters — the remote session already
@@ -578,7 +588,8 @@ above). A worker owns one browser and one exit for its lifetime, and each
 starts on a *different* exit, so no thread needs a lock. Page 1 is always
 fetched alone, before the rest are dispatched.
 
-`--concurrency` is refused outright with `--cdp-endpoint` (a Scraping
+`--concurrency` is refused outright (exit 2) with `--cdp-endpoint` — also
+when the endpoint comes from `TRANSFERMARKT_CDP_ENDPOINT` in `.env` (a Scraping
 Browser profile allows one live connection at a time — several `pid`s, one
 run each, is the way) and warns rather than refuses with no proxy pool (N
 workers then send N× the traffic from one address).
@@ -699,13 +710,12 @@ Stated plainly rather than discovered the hard way:
 - **Locale coverage is uneven and the transfers-listing fee-type text is
   English-only** — see "Locales" above for exactly what is and is not
   translated per locale.
-- **`scraper_api_client.py` (the browserless fourth engine) only paginates
-  `--mode transfers`.** `--mode market-values --pages N > 1` needs a
-  stateful browser session (see "the gallery pagination trap") that this
-  HTTP-only client, by design, does not keep — it fetches page 1 and
-  reports `partial` (exit 6) rather than silently stopping short and
-  calling that `complete`. Use one of the three browser engines for that
-  case.
+- **`scraper_api_client.py` paginates market-values by `?page=N` only.**
+  Since 2026-10-21 that is every engine's path for this mode (see "the
+  gallery pagination trap"), so `--mode market-values --pages 2` reads 50
+  rows there too. Should page 1 ever carry a next-link that is neither the
+  plain nor the gallery shape, this client stops at page 1 with exit 6
+  (`stateless_pagination_unavailable`) rather than guess.
 - **Three modes, not the old scraper's ~24 categories.** This is a
   deliberate v0.1 scope decision (market-values, club-squad, transfers,
   plus player detail as the natural fourth mode the other three need to
@@ -716,9 +726,11 @@ Stated plainly rather than discovered the hard way:
 
 ## Troubleshooting
 
-**`--mode market-values --pages N` reports `partial` past page 1.** Expected
-in some cases, not necessarily a bug — see the gallery pagination trap. Check
-`stop_reason` in the `.meta.json` sidecar.
+**`--mode market-values --pages N` reports `partial` past page 1.** Check
+`stop_reason` in the `.meta.json` sidecar. `page_not_found` on page 2 was
+the gallery pagination trap until 2026-10-21 and should no longer happen —
+if it does, the site has a third pagination shape; please open an issue
+with the run's log.
 
 **Every page comes back exit 3.** Run `bash tools/waf_probe.sh 10` from the
 same machine. If it reports challenges, the address is the problem, not the

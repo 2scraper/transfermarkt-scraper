@@ -58,18 +58,14 @@ sibling repo's identical-looking flag does.
 **Pagination is stateless-HTTP-only, checked per run.** `--mode transfers`'s
 `?page=N` is independently addressable on every capture taken of it so far
 (page 2 shares 0 transfer ids with page 1, measured 2026-09-10). `--mode
-market-values` usually is too — see page_flow.py's "gallery pagination
-trap": a wider re-measurement found the plain `?page=N` shape on 28 of 29
-consecutive fetches, with only a rare, intermittent capture needing a
-stateful browser session instead (a doubled path segment whose stateless
-page-2 fetch returns page 1's content again). This client checks page 1's
-own next-link against what `?page=N` would build, the SAME
-`page_flow.pagination_is_addressable` check the browser engines make off
-the live DOM, and only refuses `--pages N > 1` for market-values on the
-runs where that check actually fails — it does not refuse unconditionally.
-When it does refuse, this is exit 6 (partial): use playwright_scraper.py,
-which chains the site's own link one page at a time within a browser
-session for exactly that case. `--mode club-squad` and `--mode player` are
+market-values` is too: since 2026-10-21 a gallery-shaped next-link on page
+1 (`…/page/10//page/2`, which answers 404) is ignored and `?page=N`
+fetched, because it served the real pages in every gallery session measured
+— see page_flow.py's "gallery pagination trap". This client checks page 1's
+own next-link with the SAME `page_flow.pagination_is_addressable` the
+browser engines use, and refuses `--pages N > 1` (exit 6, partial) only for
+a next-link that is neither the plain nor the gallery shape. `--mode
+club-squad` and `--mode player` are
 naturally single-page already.
 
 API surface used (per https://2captcha.com/scraper/scraper-api/api)

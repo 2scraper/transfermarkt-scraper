@@ -105,19 +105,20 @@ new fee-presentation format beyond disclosed/loan/free/undisclosed ("?").
 
 ## `--mode market-values --pages N` reports `partial` (exit 6) past page 1
 
-Read this together with README's "the gallery pagination trap" section
-first — it may not be a bug at all. This mode is USUALLY independently
-addressable (a plain `?page=N`, same as transfers — confirmed on 28 of 29
-consecutive fetches in the 2026-09-10 re-measurement), but on the rare run
-where page 1's own next-link disagrees with that construction (the
-`galerie/{uuid}` shape, whose stateless page-2 fetch replays page 1), this
-scraper correctly falls back to chaining the site's own pagination link one
-page at a time inside a single browser session. If that link is ever
-missing, stale, or the fallback runs out mid-chain, the honest answer is a
-partial result with a `stop_reason` naming why — not a silently duplicated
-or skipped page. If you see `partial` on EVERY run rather than occasionally,
-that is worth reporting — it would mean the intermittent shape has become
-the norm, which this project has not seen but has not ruled out either.
+Check `stop_reason` in the `.meta.json` sidecar first.
+
+Until 2026-10-21 the usual cause was the gallery pagination trap (README):
+on 3 of 8 runs that day page 1's next-link was the `…/page/10//page/2`
+shape, the scraper followed it, got 404 and stopped with `page_not_found`.
+Market-values now ignores that link and fetches `?page=N`, which served the
+real pages in every gallery session measured. So `page_not_found` on page 2
+should no longer happen; if it does, the site has a pagination shape this
+repo has not seen — please open an issue with the run's log (`--dump-html`
+helps).
+
+`page_load_timeout` or `target_http_5xx` on a later page is the network or
+the site, not pagination: run again, or through `--cdp-endpoint` /
+`--proxy-file`.
 
 ## "Blocked" on a page that clearly rendered
 
@@ -131,8 +132,18 @@ the stripping pattern may need widening for a new extension version.
 
 ## HTTP 500 from the Scraping Browser endpoint
 
-A profile (`pid`) allows one live connection at a time. Another run is
-probably still holding it — wait for it to finish, or use a different `pid`.
+Two causes look identical here, both met on 2026-10-21: another run still
+holds the profile (`pid` — one live connection at a time), or the profile's
+own exit failed (`proxy_error`, e.g. a dead proxy account behind
+`our_proxy`). Wait for the other run or use a different `pid`; if a profile
+nobody uses keeps answering 500, check its proxy in
+`python3 tools/browser_profile_client.py accounts` / `profiles`.
+
+Do not "check" a profile with `GET /json/version` before connecting: that
+request takes the profile itself, and the connection that follows gets 500.
+
+For parallel runs, use one profile per run (`--concurrency` is refused over
+`--cdp-endpoint`).
 
 ## `ERR_TUNNEL_CONNECTION_FAILED` over `--cdp-endpoint`
 
