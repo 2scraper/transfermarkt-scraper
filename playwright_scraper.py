@@ -456,14 +456,28 @@ def handle_captcha_if_present(page, args, ready_selector: str,
             page_flow.content_timeout_ms(getattr(args, "mode", "market-values")))
         if seen:
             logger.info("Page painted %d match(es) after the auto-solve.", seen)
-        else:
-            logger.info("Nothing painted after the auto-solve; reloading once.")
-            try:
-                page.reload(wait_until="domcontentloaded", timeout=60000)
-            except (PWTimeout, PWError) as e:
-                logger.warning("Reload after auto-solve failed (%s) — "
-                               "continuing with whatever the page holds.", e)
-        return True
+            return True
+        logger.info("Nothing painted after the auto-solve; reloading once.")
+        try:
+            page.reload(wait_until="domcontentloaded", timeout=60000)
+        except (PWTimeout, PWError) as e:
+            logger.warning("Reload after auto-solve failed (%s) — "
+                           "continuing with whatever the page holds.", e)
+            return True
+        # A reported solve is not a cleared page. Measured 2026-10-21 on a
+        # live AWS WAF captcha: solveFinished after 6.5s and 23s, and the
+        # reload served the captcha again both times — the run then ended
+        # exit 3 without ever offering it to the solver API, the fallback the
+        # README puts behind the auto-solve. So look again, and fall through
+        # to that fallback when the widget is still there.
+        after = _content_when_settled(page)
+        again = detect_aws_waf(after, page.url) if (after and challenge.is_aws_waf) else None
+        if again is None or not again.has_captcha_widget:
+            return True
+        logger.warning("The auto-solve reported success, but the AWS WAF "
+                       "captcha is still served after a reload — offering "
+                       "it to the solver API.")
+        challenge = again
 
     # "Unsolvable" is a property of a PAGE -- it means the page
     # carries no widget. An AWS WAF CHALLENGE-action page is exactly that:
@@ -497,6 +511,18 @@ def handle_captcha_if_present(page, args, ready_selector: str,
     if not args.twocaptcha_key:
         logger.warning("No 2captcha API key — continuing with whatever the "
                        "page already holds.")
+        return False
+    if challenge.is_aws_waf and getattr(args, "cdp_endpoint", None) and not proxy:
+        # Measured 2026-10-21: over a profile's exit, the proxyless task
+        # came back `existing_token` — 2captcha's own address was not
+        # challenged, so it bought nothing. Do not pay for that again.
+        logger.warning("AWS WAF over --cdp-endpoint with no proxy for the "
+                       "solver: it would solve from its own address, not the "
+                       "profile's, and buy a token that clears nothing — not "
+                       "paying. Build the profile on a proxy you hold "
+                       "(browser_profile_client.py connection --proxy-line N) "
+                       "and pass the same one as TRANSFERMARKT_PROXY, or use "
+                       "another profile/exit.")
         return False
     # Checked before the purchase, against the PAGE's allowance: a retry from
     # a fresh browser or another exit does not earn a second paid solve.
@@ -632,7 +658,8 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
             break
 
         if handle_captcha_if_present(session.page, args, ready_selector,
-                                    proxy=pool.current if pool else None,
+                                    proxy=(pool.current if pool
+                                           else getattr(args, "solver_exit", None)),
                                     budget=budget):
             session.page.wait_for_timeout(1000)
             # The page now holds a DIFFERENT document: the WAF's script
@@ -918,9 +945,20 @@ def scrape(args) -> int:
     stop_reason = "single_page_mode" if args.mode not in PAGINATED_MODES else "completed"
 
     pool = proxy_pool_from_args(args)
+    args.solver_exit = None
     if pool and args.cdp_endpoint:
-        logger.warning("Ignoring --proxy/--proxy-file: with --cdp-endpoint "
-                       "the remote browser has its own exit.")
+        # The remote browser keeps its own exit. But a captcha must be solved
+        # from the address it was served to, and the solver API does not run
+        # on the browser's exit: proxyless, it answered a live AWS WAF captcha
+        # served to a profile's exit with `existing_token` (2026-10-21),
+        # clearing nothing. So the proxy goes to the solver — correct when it
+        # IS the profile's exit (`browser_profile_client.py connection
+        # --proxy-line`).
+        args.solver_exit = pool.current
+        logger.warning("--cdp-endpoint: the remote browser has its own exit; "
+                       "--proxy/--proxy-file is used ONLY for the captcha "
+                       "solver, which must solve from that same exit — pass "
+                       "the proxy the profile was built with.")
         pool = None
 
     concurrency = max(1, args.concurrency)

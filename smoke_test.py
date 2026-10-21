@@ -5623,6 +5623,118 @@ def test_cdp_connect_hint():
     return ok
 
 
+def test_aws_waf_solver_path_over_cdp(skips):
+    group("AWS WAF over the Scraping Browser: auto-solve, then the solver on the same exit")
+    ok = True
+    import captcha_solver as cs
+    url = "https://www.transfermarkt.com/spieler-statistik/wertvollstespieler/marktwertetop"
+    ch = cs.detect_aws_waf(FIX_AWS_WAF_CHALLENGE, url)
+    ok &= check("the voucher is exchanged beside the page's own challenge.js",
+                cs.aws_waf_voucher_url(ch)
+                == "https://6cb07a88f2ca.54698f12.us-east-1.token.awswaf.com/6cb/voucher")
+
+    sent = {}
+
+    class _Resp:
+        def __init__(self, ok, body):
+            self.ok, self._body, self.status_code = ok, body, 200 if ok else 400
+
+        def json(self):
+            return self._body
+
+    real_post = cs.requests.post
+    try:
+        def fake_post(u, data=None, headers=None, proxies=None, timeout=None, **kw):
+            sent.update(url=u, data=data, proxies=proxies)
+            return _Resp(True, {"token": "EXCHANGED"})
+        cs.requests.post = fake_post
+        got = cs.exchange_aws_waf_voucher(ch, "VOUCHER", "EXISTING", "http://u:p@h:1")
+        ok &= check("the raw voucher is NOT the token: it is exchanged for one "
+                    "(the raw voucher as cookie was refused, 2026-10-21)",
+                    got == "EXCHANGED" and sent["url"].endswith("/voucher")
+                    and json.loads(sent["data"]) == {"captcha_voucher": "VOUCHER",
+                                                     "existing_token": "EXISTING"})
+        ok &= check("...through the run's own exit", sent["proxies"] == {
+            "http": "http://u:p@h:1", "https": "http://u:p@h:1"})
+        cs.requests.post = lambda *a, **kw: _Resp(False, {"code": "x"})
+        ok &= check("...and a failed exchange returns None (the caller falls back)",
+                    cs.exchange_aws_waf_voucher(ch, "V", "E") is None)
+    finally:
+        cs.requests.post = real_post
+
+    try:
+        import playwright_scraper as ps
+    except ImportError as e:
+        skips.append("playwright_scraper AWS WAF over CDP (%s)" % e)
+        return ok
+
+    class _Ctx:
+        def add_cookies(self, cookies):
+            pass
+
+    class _Page:
+        def __init__(self):
+            self.url, self.context, self.reloads = url, _Ctx(), 0
+
+        def content(self):
+            return FIX_AWS_WAF_CHALLENGE
+
+        def query_selector_all(self, sel):
+            return []
+
+        def evaluate(self, js, *a):
+            return None
+
+        def reload(self, **kw):
+            self.reloads += 1
+
+        def wait_for_timeout(self, ms):
+            pass
+
+    calls = []
+    saved = {n: getattr(ps, n) for n in ("solve_recaptcha", "wait_for_autosolve")}
+    saved_wfc = ps.page_flow.wait_for_count
+    ps.solve_recaptcha = lambda challenge, key, **kw: calls.append(kw.get("proxy")) or "TOKEN"
+    ps.page_flow.wait_for_count = lambda *a, **kw: 0
+
+    def args(cdp):
+        return type("A", (), {"cdp_endpoint": cdp, "twocaptcha_key": "k",
+                              "solve_captcha": "when-blocked", "captcha_api": "v2",
+                              "min_score": 0.7, "mode": "market-values"})()
+    try:
+        ps.wait_for_autosolve = lambda page, sel: False
+        calls.clear()
+        res = ps.handle_captcha_if_present(_Page(), args("ws" + "://h:9222"), "table.items",
+                                           proxy=None, budget=page_flow.SolveBudget())
+        ok &= check("over --cdp-endpoint with no proxy for the solver, an AWS WAF "
+                    "captcha is NOT bought (proxyless came back existing_token)",
+                    res is False and calls == [])
+        calls.clear()
+        ps.handle_captcha_if_present(_Page(), args("ws" + "://h:9222"), "table.items",
+                                     proxy="http://u:p@h:1", budget=page_flow.SolveBudget())
+        ok &= check("...with the profile's proxy it is bought, solved on that exit",
+                    calls == ["http://u:p@h:1"])
+        # The auto-solve reports success but the reload still serves the
+        # captcha (twice, live, 2026-10-21): the solver must get its turn.
+        ps.wait_for_autosolve = lambda page, sel: True
+        calls.clear()
+        page = _Page()
+        ps.handle_captcha_if_present(page, args("ws" + "://h:9222"), "table.items",
+                                     proxy="http://u:p@h:1", budget=page_flow.SolveBudget())
+        ok &= check("a reported auto-solve that leaves the captcha up falls "
+                    "through to the solver API (was: gave up, exit 3)",
+                    page.reloads >= 1 and calls == ["http://u:p@h:1"])
+    finally:
+        for n, v in saved.items():
+            setattr(ps, n, v)
+        ps.page_flow.wait_for_count = saved_wfc
+    src = open(os.path.join(REPO_ROOT, "playwright_scraper.py"), encoding="utf-8").read()
+    ok &= check("over --cdp-endpoint a given proxy is kept for the solver, "
+                "not thrown away", "args.solver_exit = pool.current" in src
+                and 'getattr(args, "solver_exit", None)' in src)
+    return ok
+
+
 def test_concurrency_refused_over_cdp(skips):
     group("--concurrency over a Scraping Browser endpoint is refused (exit 2)")
     ok = True
@@ -5741,6 +5853,7 @@ def main() -> int:
     ok &= test_target_5xx_is_a_server_error(skips)
     ok &= test_min_value_flag(skips)
     ok &= test_concurrency_refused_over_cdp(skips)
+    ok &= test_aws_waf_solver_path_over_cdp(skips)
     ok &= test_cdp_connect_hint()
     ok &= test_diff_refusal_advice()
 

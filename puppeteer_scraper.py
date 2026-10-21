@@ -131,8 +131,23 @@ class _AsyncBridge:
             raise TimeoutError(f"pyppeteer call did not return within {timeout}s")
 
     def close(self):
+        # Cancel what pyppeteer left running (its websocket reader, keepalive)
+        # and let it unwind BEFORE stopping the loop. Stopping alone left
+        # those tasks pending, and at exit Python logged "Task was destroyed
+        # but it is pending!" on every run (2-3 lines, measured 2026-10-21).
+        async def _drain():
+            tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            asyncio.run_coroutine_threadsafe(_drain(), self.loop).result(5)
+        except Exception as e:  # noqa: BLE001 -- teardown must not raise
+            logger.debug("Ignoring error while draining the pyppeteer loop: %s", e)
         self.loop.call_soon_threadsafe(self.loop.stop)
         self._thread.join(timeout=5)
+        if not self._thread.is_alive():
+            self.loop.close()
 
 
 @dataclass

@@ -699,11 +699,24 @@ Stated plainly rather than discovered the hard way:
   pairing identical under `diff_runs.py`. Whether a known-datacentre IP is
   treated differently is a question about an address, and
   `tools/waf_probe.sh` is how you answer it for yours.
-- **The WAF solve path has never met a live challenge.** `AmazonTaskProxyless`
-  is implemented and its schema is verified against the API with a control,
-  but no challenge has appeared to solve since it was written, so the
-  end-to-end path is untested. Stated here rather than left to be
-  discovered: this is "not yet exercised", not a verdict on the solver.
+- **An AWS WAF captcha met on 2026-10-21 was not cleared — by any path.**
+  Singapore exits drew the captcha on every request (curl 3 of 3 per
+  session; the Scraping Browser on an SG profile every time). Measured on
+  those exits:
+  - the Scraping Browser's own auto-solve reported `solveFinished` (6-30 s),
+    and the reload served the captcha again — the engine now passes it to
+    the solver API instead of stopping there;
+  - `AmazonTask` through the page's own exit returned a real
+    `captcha_voucher` in ~10 s in 4 of 6 tries (the other 2:
+    `existing_token` only), $0.00145 each;
+  - the voucher is not the cookie: set raw it was refused; exchanged at
+    `/voucher` beside the page's `challenge.js` it gives a token (HTTP 200),
+    which the engine now does — and the page's OWN integration,
+    `ChallengeScript.submitCaptcha(voucher)`, accepted it too;
+  - after each of those, the page served the captcha again.
+  So on those exits nothing this repo or the site's own widget does gets
+  through, and why is not isolated. Other exits drew no captcha at all
+  that day; use another profile or exit when one does.
 - **Selenium cannot use the Scraping Browser API** (see the engine limits
   above), so on an address that meets the WAF, Playwright or pyppeteer is
   the engine to reach for. The solve path itself is now identical in all

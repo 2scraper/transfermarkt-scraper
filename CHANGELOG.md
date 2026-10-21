@@ -64,6 +64,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with a pair measured from players' rows (none did). Checked live
   2026-10-21: 8 ranking pages and 3 club squads per host, 0 untranslated;
   308 squad rows on four hosts identical to the English site's.
+- **A live AWS WAF captcha over the Scraping Browser ended the run without
+  the solver API ever being asked** (2026-10-21, an SG exit): the auto-solve
+  reported `solveFinished`, the reload served the captcha again, and the
+  run stopped at exit 3. Now, when the widget is still there after the
+  reload, it goes to the solver. Over `--cdp-endpoint` the solver gets the
+  profile's exit when `--proxy` / `TRANSFERMARKT_PROXY` names it (the proxy
+  the profile was built with); without one, nothing is bought — proxyless,
+  2captcha answered `existing_token` from its own address, clearing nothing.
+  The `captcha_voucher` is exchanged at `/voucher` beside the page's
+  `challenge.js` for the actual `aws-waf-token` (the raw voucher as the
+  cookie was refused). On that exit the captcha still came back after every
+  path, the site's own `submitCaptcha` included — see README.
+- **pyppeteer logged "Task was destroyed but it is pending!" at exit** on
+  every run: the private event loop was stopped with pyppeteer's own tasks
+  still running. They are now cancelled and awaited first.
 - **`diff_runs` advised "Re-run the incomplete side" for two complete runs
   of different modes**, and called a squad row a "transfer row". The advice
   now follows the reason.
