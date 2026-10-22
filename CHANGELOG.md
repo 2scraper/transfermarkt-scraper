@@ -4,6 +4,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.1] — 2026-10-22
+
 > **Behaviour changes:**
 >
 > - **`--concurrency` over `--cdp-endpoint` is refused (exit 2)**, also when
