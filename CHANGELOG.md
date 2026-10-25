@@ -134,6 +134,13 @@ everything in it ships here, with the fixes found by the full test of
 ### Changed
 
 - CI only: the canary now runs weekly (Mondays 07:37 UTC) and on a manual dispatch, with its optional secrets `TRANSFERMARKT_CDP_ENDPOINT`, `TRANSFERMARKT_PROXY` passed on every run; the daily schedule is removed.
+- README re-measured for this release: the Locales table gains the
+  thousands format of all five hosts (measured 2026-10-25); "Engines" states
+  the proxy check before the first page, Selenium's `proxy_auth_refused`,
+  and pyppeteer's `Fetch`-based proxy login and auto-solve; the three-engine
+  and Docker comparison is re-run (0 added / removed / changed in every
+  pairing, 2026-10-25); the offline-suite counts are 828 / 900 / 870 / 870
+  (were 459 / 494 / 481 / 483 on 2026-09-16).
 
 ## [1.2.0] — 2026-10-16
 

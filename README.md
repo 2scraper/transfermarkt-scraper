@@ -398,13 +398,18 @@ v0.1 of this repo verified only `www.transfermarkt.com`. Five hosts are
 verified as of v0.3 — the same DOM structure and URL/id scheme, just
 different text, normalised into a single English vocabulary:
 
-| Host | Locale | Money format | Position/nationality text |
+| Host | Locale | Money format (millions / thousands) | Position/nationality text |
 |---|---|---|---|
-| `www.transfermarkt.com` | English | `€220.00m` | English (nothing to translate) |
-| `www.transfermarkt.de` | German | `220,00 Mio. €` | Translated (all 16 positions, all 254 countries the site lists) |
-| `www.transfermarkt.world` | Russian | `220,00 млн €` | Translated (all 16 positions, all 254 countries) |
-| `www.transfermarkt.co.kr` | Korean | `220.00 mil. €` | Translated (all 16 positions, all 254 countries) |
-| `www.transfermarkt.jp` | Japanese | `220.00 m €` | Positions translated (all 16); nationality text is already English on this locale, except 6 names it prints differently ("Turkey", "Grenadaj", …), which are mapped |
+| `www.transfermarkt.com` | English | `€220.00m` / `€500k` | English (nothing to translate) |
+| `www.transfermarkt.de` | German | `220,00 Mio. €` / `500 Tsd. €` | Translated (all 16 positions, all 254 countries the site lists) |
+| `www.transfermarkt.world` | Russian | `220,00 млн €` / `500 тыс €` | Translated (all 16 positions, all 254 countries) |
+| `www.transfermarkt.co.kr` | Korean | `220.00 mil. €` / `500 k €` | Translated (all 16 positions, all 254 countries) |
+| `www.transfermarkt.jp` | Japanese | `220.00 m €` / `500 千 €` | Positions translated (all 16); nationality text is already English on this locale, except 6 names it prints differently ("Turkey", "Grenadaj", …), which are mapped |
+
+The thousands column was measured on 2026-10-25 from one EUR 500k player in
+Bayern's squad on all five hosts. Until v1.3.0 the Korean and Japanese
+suffixes had been guessed (`th.`, `k`), so every value under EUR 1m on those
+two hosts came out as `price: null`.
 
 There is no `--country` flag, and the site's language is not chosen by a
 flag either — same convention as this family's `mediamarkt-scraper`. The
@@ -532,7 +537,15 @@ Known limits, stated here rather than left to be discovered:
   put a password.
 - **Selenium cannot authenticate a proxy at all.** This repo strips
   credentials and warns rather than letting you believe a `user:pass` URL
-  is doing something.
+  is doing something. A proxy that then answers `407` (it needs the login
+  Selenium cannot send) ends the run with `stop_reason: proxy_auth_refused`,
+  exit 5 — until v1.3.0 Chrome's error page was read as a page with no rows,
+  exit 4. A proxy that authorises your machine by IP works.
+- **Every engine asks a proxy exit once, before its first page, whether it
+  takes the login** — one `CONNECT` (`proxy_pool.connect_status`), under a
+  second. A browser never says a proxy refused it: measured 2026-10-25 with a
+  wrong login, Playwright waited out the 60 s load timeout on every attempt.
+  Now a `407` is named at once and nothing is requested from the site.
 - **pyppeteer is effectively unmaintained** and its own README points at
   Playwright. It is here for parity with this family's usual three-engine
   lineup.
@@ -548,11 +561,24 @@ Known limits, stated here rather than left to be discovered:
     --chromium-path "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
   ```
 
+- **pyppeteer answers a proxy's login over the CDP `Fetch` domain**, not
+  with its own `page.authenticate()`: that one needs
+  `Network.setRequestInterception`, which current Chrome no longer has, so
+  until v1.3.0 every pyppeteer run with a proxy login under
+  `--chromium-path` died before the first page. Over the Scraping Browser,
+  pyppeteer now really turns on `Captcha.setAutoSolve` (the log says
+  "enabled"); until v1.3.0 the call failed on every connect and was logged
+  as "not available".
+
 **All three engines, and the Docker image, were run against the live site on
 2026-09-16 and their rows compared with `diff_runs.py`: 0 added, 0 removed,
 0 changed in every pairing.** That is what the sentence above about them not
 drifting apart is worth — before this release two of the three had never
-completed a live fetch of this site at all.
+completed a live fetch of this site at all. Re-measured 2026-10-25 for
+v1.3.0, minutes apart: Selenium against Playwright (2 ranking pages), pyppeteer
+against Playwright (3 ranking pages over the Scraping Browser; the whole
+112-row transfers listing locally) and the Docker image against Playwright —
+0 added, 0 removed, 0 changed in every pairing.
 
 ### The fourth engine: `scraper_api_client.py` (no browser)
 
@@ -805,16 +831,17 @@ read the number off your own run rather than off this paragraph:
 python3 smoke_test.py | grep -c '^  PASS'
 ```
 
-Measured 2026-09-16 on Python 3.14, one virtualenv per engine (the same
-shape CI's `engine-smoke` matrix uses, and the only shape that works — the
-three engines' pins are mutually unsatisfiable in one environment):
+Measured 2026-10-26 on Python 3.14 for v1.3.0, one virtualenv per engine
+(the same shape CI's `engine-smoke` matrix uses, and the only shape that
+works — the three engines' pins are mutually unsatisfiable in one
+environment):
 
 | Installed | Checks |
 |---|---|
-| nothing beyond `requirements.txt` | **459** |
-| Playwright | **494** |
-| Selenium | **481** |
-| pyppeteer | **483** |
+| nothing beyond `requirements.txt` | **828** |
+| Playwright | **900** |
+| Selenium | **870** |
+| pyppeteer | **870** |
 
 A configuration with fewer checks is not a weaker run; an engine whose
 library is absent is reported as a skip, and CI fails if that list is not
