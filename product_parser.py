@@ -330,10 +330,16 @@ def league_id_from_url(url: Optional[str]) -> Optional[str]:
 #
 #   locale  symbol      decimal   thousand suffix   million suffix
 #   en      prefix "€"  period    k (measured page1 has none < 1m; documented)
-#   de      suffix " €" comma     Tsd. (documented, not measured)   Mio.
-#   ru      suffix " €" comma     тыс. (documented, not measured)   млн
-#   ko      suffix " €" period    th. (documented, not measured)    mil.
-#   ja      suffix " €" period    k (documented, not measured)      m
+#   de      suffix " €" comma     Tsd.                              Mio.
+#   ru      suffix " €" comma     тыс                               млн
+#   ko      suffix " €" period    k                                 mil.
+#   ja      suffix " €" period    千                                m
+#
+# The thousand suffixes were measured 2026-10-25 on Bayern's squad page, one
+# EUR 500k player in every locale: "500 Tsd. €", "500 тыс €", "500 k €",
+# "500 千 €". Until then ko and ja had been guessed as "th." and "k", so every
+# value under 1m read as None on those two hosts. The guesses ("th.", ja
+# "k", ru "тыс.") stay accepted on the same "costs nothing" basis as billion.
 #
 # billion (`bn`/`Mrd.`/`млрд`/`bil.`/`bn`) is documented-but-never-observed
 # in EVERY locale including English (this repo's pre-existing precedent —
@@ -349,9 +355,10 @@ _MONEY_FORMATS = {
            "suffixes": {"млрд": 1_000_000_000, "млн": 1_000_000, "тыс.": 1_000,
                         "тыс": 1_000}},
     "ko": {"symbol_prefix": False, "decimal": ".",
-           "suffixes": {"bil.": 1_000_000_000, "mil.": 1_000_000, "th.": 1_000}},
+           "suffixes": {"bil.": 1_000_000_000, "mil.": 1_000_000, "th.": 1_000,
+                        "k": 1_000}},
     "ja": {"symbol_prefix": False, "decimal": ".",
-           "suffixes": {"bn": 1_000_000_000, "m": 1_000_000, "k": 1_000}},
+           "suffixes": {"bn": 1_000_000_000, "m": 1_000_000, "千": 1_000, "k": 1_000}},
 }
 
 # One regex per locale: suffixes sorted longest-first so e.g. German "Mrd."

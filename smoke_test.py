@@ -845,6 +845,13 @@ def test_locale_money_parsing():
         ("160,00 Mio. €", "de", (160_000_000.0, "EUR")),
         ("-", "de", (None, None)),
         ("", "ru", (None, None)),
+        # Thousands, measured 2026-10-25 on Bayern's squad page (club 27),
+        # one player (id 40680) valued EUR 500k in every locale. ko and ja
+        # had been guessed as "th." and "k" and read as None.
+        ("500 Tsd. €", "de", (500_000.0, "EUR")),
+        ("500 тыс €", "ru", (500_000.0, "EUR")),
+        ("500 k €", "ko", (500_000.0, "EUR")),
+        ("500 千 €", "ja", (500_000.0, "EUR")),
     ]
     for text, locale, expected in cases:
         got = parse_market_value(text, locale=locale)

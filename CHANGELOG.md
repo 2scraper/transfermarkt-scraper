@@ -21,6 +21,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Values under EUR 1m read as `null` on `.co.kr` and `.jp`.** The thousand
+  suffixes of those two locales had been guessed ("th.", "k"), never
+  measured; the sites print "500 k €" and "500 千 €". Measured 2026-10-25 on
+  Bayern's squad (club 27): 1 of 23 rows lost its price on each host, while
+  `.de` ("500 Tsd. €") and `.world` ("500 тыс €") read it. Both suffixes are
+  now accepted; 23 of 23 priced live on both hosts after the fix.
 - **`--out` into a directory that does not exist lost the run.** The rows
   were gathered, then the write died with `FileNotFoundError` (exit 1). The
   writer now creates the directory (outputs, sidecar and `diff_runs --out`).
