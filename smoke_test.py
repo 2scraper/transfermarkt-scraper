@@ -5581,6 +5581,14 @@ def test_cdp_connect_hint():
                 r(dns, 1) is None and r(busy, 1) is None)
     ok &= check("the hint names the refusal it saw",
                 "profile_locked" in h(locked) and "proxy_timeout" in h(exit_down))
+    # 2026-10-25, one of three parallel connects; the step re-run connected.
+    no_fp = busy + "\nfingerprint_error"
+    ok &= check("fingerprint_error is retried once",
+                r(no_fp, 1) == 3.0 and r(no_fp, 2) is None)
+    ok &= check("the fingerprint_error hint names it and blames neither a "
+                "busy pid nor the exit",
+                "fingerprint_error" in h(no_fp) and "another run" not in h(no_fp)
+                and "proxy_error" not in h(no_fp))
 
     try:
         import playwright_scraper as ps

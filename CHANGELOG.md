@@ -60,7 +60,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   refusals are now retried (`profile_locked` up to 3 times after 3, 6 and
   9 s; `proxy_timeout`/`proxy_error` once after 3 s) in Playwright and
   pyppeteer, and the hint names the word. A connect timeout is still not
-  retried.
+  retried. `fingerprint_error` (2026-10-25: one of three parallel connects;
+  the same profile connected a minute later) is retried once too, and its
+  hint no longer blames a busy `pid` or a failed exit — the service could
+  not give the profile a fingerprint.
 - **Positions and nationalities on .de/.world/.co.kr/.jp passed through
   untranslated whenever a name was not in the tables built from a top-25
   capture** — 31 countries and a position on 8 German ranking pages, more on

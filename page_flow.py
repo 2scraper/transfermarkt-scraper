@@ -753,9 +753,14 @@ def pagination_is_addressable(mode: str, page1_url: str,
 #                   moment before; the next attempt (after it) connected.
 #   proxy_timeout   the profile's exit did not answer; the next run, on the
 #   proxy_error     same profile, connected and scraped.
+# And 2026-10-25, one of three parallel connects on a fresh account:
+#   fingerprint_error  the service could not give the profile a fingerprint;
+#                      the same run on the same profile a minute later
+#                      connected and scraped.
 CDP_REFUSAL_RETRIES = {"profile_locked": (3, 3.0),
                        "proxy_timeout": (1, 3.0),
-                       "proxy_error": (1, 3.0)}
+                       "proxy_error": (1, 3.0),
+                       "fingerprint_error": (1, 3.0)}
 
 
 def cdp_refusal(error_text: str) -> Optional[str]:
@@ -801,6 +806,11 @@ def cdp_connect_hint(error_text: str) -> str:
                 "Run again in a minute; if it persists, check the account's or "
                 "profile's proxy with `tools/browser_profile_client.py accounts` "
                 "/ `profiles`." % word)
+    if word == "fingerprint_error":
+        return ("fingerprint_error: the Scraping Browser could not give this "
+                "profile a fingerprint (still after a retry). That is on the "
+                "service's side, not the site's or the exit's: run again in a "
+                "minute; if it persists, try another profile.")
     if "401" in text or "unauthorized" in text:
         return ("The Scraping Browser API refused the login or password in the "
                 "endpoint. Fetch a fresh one: python3 tools/browser_profile_client.py "

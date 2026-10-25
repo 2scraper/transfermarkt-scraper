@@ -140,8 +140,12 @@ nobody uses keeps answering 500, check its proxy in
 `python3 tools/browser_profile_client.py accounts` / `profiles`.
 
 The engines read the word in the 500's body: `profile_locked` is retried up
-to 3 times (3, 6, 9 s) and `proxy_timeout` / `proxy_error` once, so a 500 that
-reaches you has outlasted those retries.
+to 3 times (3, 6, 9 s) and `proxy_timeout` / `proxy_error` / `fingerprint_error`
+once, so a 500 that reaches you has outlasted those retries.
+
+A third cause names itself: `fingerprint_error` (met 2026-10-25) — the
+service could not give the profile a fingerprint. It is neither a busy `pid`
+nor the exit; the same profile connected a minute later.
 
 Do not "check" a profile with `GET /json/version` before connecting: that
 request takes the profile itself, and the connection that follows gets 500.
