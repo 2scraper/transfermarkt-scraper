@@ -540,7 +540,9 @@ Known limits, stated here rather than left to be discovered:
   is doing something. A proxy that then answers `407` (it needs the login
   Selenium cannot send) ends the run with `stop_reason: proxy_auth_refused`,
   exit 5 — until v1.3.0 Chrome's error page was read as a page with no rows,
-  exit 4. A proxy that authorises your machine by IP works.
+  exit 4. A proxy that authorises your machine by IP should not be
+  affected — without a login it answers the check with 200, not 407 — but
+  that case is reasoned from the code, not measured here.
 - **Every engine asks a proxy exit once, before its first page, whether it
   takes the login** — one `CONNECT` (`proxy_pool.connect_status`), under a
   second. A browser never says a proxy refused it: measured 2026-10-25 with a

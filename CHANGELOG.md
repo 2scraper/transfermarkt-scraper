@@ -20,7 +20,8 @@ everything in it ships here, with the fixes found by the full test of
 >   any unusable exit. **Selenium** strips proxy credentials by design, so a
 >   proxy that needs a login now ends the run this way too; it used to go
 >   out unauthenticated and report Chrome's error page as zero rows (exit 4).
->   A proxy that authorises by IP is unaffected.
+>   A proxy that authorises by IP answers the check with 200 and should be
+>   unaffected (reasoned from the code; not measured).
 > - **`--concurrency` over `--cdp-endpoint` is refused (exit 2)**, also when
 >   the endpoint comes from `TRANSFERMARKT_CDP_ENDPOINT` in `.env`. It used to
 >   warn "ignored" and run one worker, exit 0, while the README said it was
