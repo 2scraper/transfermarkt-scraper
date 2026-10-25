@@ -4,10 +4,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [1.2.1] — 2026-10-22
+## [1.3.0] — 2026-10-26
+
+1.2.1 was prepared on 2026-10-22 (branch `release/v1.2.1`) and never tagged;
+everything in it ships here, with the fixes found by the full test of
+2026-10-25 on top. Minor rather than patch: a new stop reason
+(`proxy_auth_refused`) and the behaviour changes below.
 
 > **Behaviour changes:**
 >
+> - **A proxy that answers `407 Proxy Authentication Required` stops the
+>   page before the site is asked** — exit 5, `stop_reason:
+>   proxy_auth_refused` — instead of a load timeout (Playwright) or a crash
+>   (pyppeteer). With several exits a refused one is left for the next, like
+>   any unusable exit. **Selenium** strips proxy credentials by design, so a
+>   proxy that needs a login now ends the run this way too; it used to go
+>   out unauthenticated and report Chrome's error page as zero rows (exit 4).
+>   A proxy that authorises by IP is unaffected.
 > - **`--concurrency` over `--cdp-endpoint` is refused (exit 2)**, also when
 >   the endpoint comes from `TRANSFERMARKT_CDP_ENDPOINT` in `.env`. It used to
 >   warn "ignored" and run one worker, exit 0, while the README said it was
