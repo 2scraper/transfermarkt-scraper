@@ -4,6 +4,133 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-10-26
+
+1.2.1 was prepared on 2026-10-22 (branch `release/v1.2.1`) and never tagged;
+everything in it ships here, with the fixes found by the full test of
+2026-10-25 on top. Minor rather than patch: a new stop reason
+(`proxy_auth_refused`) and the behaviour changes below.
+
+> **Behaviour changes:**
+>
+> - **A proxy that answers `407 Proxy Authentication Required` stops the
+>   page before the site is asked** — exit 5, `stop_reason:
+>   proxy_auth_refused` — instead of a load timeout (Playwright) or a crash
+>   (pyppeteer). With several exits a refused one is left for the next, like
+>   any unusable exit. **Selenium** strips proxy credentials by design, so a
+>   proxy that needs a login now ends the run this way too; it used to go
+>   out unauthenticated and report Chrome's error page as zero rows (exit 4).
+>   A proxy that authorises by IP is unaffected.
+> - **`--concurrency` over `--cdp-endpoint` is refused (exit 2)**, also when
+>   the endpoint comes from `TRANSFERMARKT_CDP_ENDPOINT` in `.env`. It used to
+>   warn "ignored" and run one worker, exit 0, while the README said it was
+>   refused. For parallel Scraping Browser runs use one profile per run.
+> - **`--mode market-values --pages N` fetches `?page=N` even when page 1's
+>   next-link is the gallery shape.** Following that link answered 404 and
+>   ended 3 of 8 runs at page 1 with exit 6 on 2026-10-21; `?page=N` served
+>   the real pages in every gallery session measured. In
+>   `scraper_api_client.py` the same run is now complete instead of
+>   `stateless_pagination_unavailable`.
+
+### Fixed
+
+- **A proxy that refused its login was never named.** Measured 2026-10-25
+  with a bogus login on the real gateway (it answers CONNECT with 407):
+  Playwright waited out the load timeout, 60 s per attempt, and reported
+  `page_load_timeout`; Selenium (credentials stripped by design) read Chrome's
+  error page as a page with no rows — exit 4, a false answer about the site.
+  Every engine now asks the exit with one CONNECT before its first page
+  (`proxy_pool.connect_status`, once per exit): a 407 stops the page at once
+  with `stop_reason: proxy_auth_refused`, exit 5, nothing requested from the
+  site, and a message that names the exit and — for Selenium — that it cannot
+  send a login. Measured after: 1–2 s on all three engines.
+- **pyppeteer could not use an authenticated proxy in current Chrome.** Its
+  `page.authenticate()` turns on `Network.setRequestInterception`, which
+  Chrome no longer has; with `--chromium-path` (required on Apple silicon)
+  every run with a proxy login — a working one included — died before the
+  first page (exit 1, a traceback). The proxy's challenge is now answered
+  over the CDP `Fetch` domain; a second challenge for one request (a wrong
+  password) is cancelled rather than looped. 50 rows through a working
+  login, 2026-10-25.
+- **pyppeteer never enabled the Scraping Browser's captcha auto-solve.**
+  `Captcha.setAutoSolve` was handed to the event-loop bridge as a Future,
+  which raised "A coroutine object is required" on every connect; the
+  `except` around it logged that as "not available on this --cdp-endpoint".
+  Now sent from a coroutine: "Captcha.setAutoSolve enabled", 25 rows,
+  2026-10-25.
+- **Values under EUR 1m read as `null` on `.co.kr` and `.jp`.** The thousand
+  suffixes of those two locales had been guessed ("th.", "k"), never
+  measured; the sites print "500 k €" and "500 千 €". Measured 2026-10-25 on
+  Bayern's squad (club 27): 1 of 23 rows lost its price on each host, while
+  `.de` ("500 Tsd. €") and `.world` ("500 тыс €") read it. Both suffixes are
+  now accepted; 23 of 23 priced live on both hosts after the fix.
+- **`--out` into a directory that does not exist lost the run.** The rows
+  were gathered, then the write died with `FileNotFoundError` (exit 1). The
+  writer now creates the directory (outputs, sidecar and `diff_runs --out`).
+- **A timeout on a page past the listing's end made a complete run
+  partial.** Under `--concurrency` workers take pages beyond the end at once;
+  measured 2026-10-21 (4 workers): pages 1-4 served, 5 timed out, 6 = page 4,
+  reported `partial`, exit 6, `pages_failed: [5]`, `listing_pages: 5`, with
+  every row gathered. A page that repeats page J exactly, with nothing served
+  in between, now puts the unserved pages between past the end too: exit 0,
+  `listing_ended`, `listing_pages: 4`. And when the LAST real page is the
+  one that times out, a later page that answers with it — its pager marking
+  that page current, which the site does for any number past the end — now
+  supplies its rows (`page_flow.fill_from_past_end`): the run ends
+  `listing_ended`, not `partial` with every row in hand.
+- **`--proxy-sessions` refused the `eu.proxy.rucaptcha.com` gateway.** Both
+  brand domains front the same gateway (four sessions, four distinct exits,
+  2026-10-21); `.proxy.rucaptcha.com` is accepted and the refusal names both.
+- **`tools/browser_profile_client.py accounts` listed every dict in the
+  response** — 21 lines for 4 accounts, mixing in proxy accounts, profiles
+  and projects, without `proxyMode`. It now prints one row per account:
+  id, proxyMode, country, profile count, name.
+- **A failed CDP connect blamed a busy profile for any error**, an
+  unresolvable host included. The hint now follows the error: host
+  unreachable, 401 (credentials), or 500 (a busy `pid` or the profile's
+  failed exit, `proxy_error`). Shared by Playwright and pyppeteer.
+- **A busy or exit-less Scraping Browser profile ended the run at once.**
+  The API refuses the WebSocket upgrade with HTTP 500 and one word in the
+  body; measured 2026-10-21 on fresh profiles: `profile_locked` right after
+  the previous run on that `pid` had ended gracefully, and `proxy_timeout`
+  from the profile's exit — the next attempt connected both times. Those
+  refusals are now retried (`profile_locked` up to 3 times after 3, 6 and
+  9 s; `proxy_timeout`/`proxy_error` once after 3 s) in Playwright and
+  pyppeteer, and the hint names the word. A connect timeout is still not
+  retried. `fingerprint_error` (2026-10-25: one of three parallel connects;
+  the same profile connected a minute later) is retried once too, and its
+  hint no longer blames a busy `pid` or a failed exit — the service could
+  not give the profile a fingerprint.
+- **Positions and nationalities on .de/.world/.co.kr/.jp passed through
+  untranslated whenever a name was not in the tables built from a top-25
+  capture** — 31 countries and a position on 8 German ranking pages, more on
+  every new squad (Österreich, Japan, Ukraine, "Hängende Spitze", ...). The
+  tables now come from the site's own filter lists on the ranking page
+  (`land_id`: 254 countries, `spielerposition_id`: 16 positions, same option
+  values on every host) — `locale_names.py`, regenerated by the new
+  `tools/build_locale_names.py`, which refuses to write if a list disagrees
+  with a pair measured from players' rows (none did). Checked live
+  2026-10-21: 8 ranking pages and 3 club squads per host, 0 untranslated;
+  308 squad rows on four hosts identical to the English site's.
+- **A live AWS WAF captcha over the Scraping Browser ended the run without
+  the solver API ever being asked** (2026-10-21, an SG exit): the auto-solve
+  reported `solveFinished`, the reload served the captcha again, and the
+  run stopped at exit 3. Now, when the widget is still there after the
+  reload, it goes to the solver. Over `--cdp-endpoint` the solver gets the
+  profile's exit when `--proxy` / `TRANSFERMARKT_PROXY` names it (the proxy
+  the profile was built with); without one, nothing is bought — proxyless,
+  2captcha answered `existing_token` from its own address, clearing nothing.
+  The `captcha_voucher` is exchanged at `/voucher` beside the page's
+  `challenge.js` for the actual `aws-waf-token` (the raw voucher as the
+  cookie was refused). On that exit the captcha still came back after every
+  path, the site's own `submitCaptcha` included — see README.
+- **pyppeteer logged "Task was destroyed but it is pending!" at exit** on
+  every run: the private event loop was stopped with pyppeteer's own tasks
+  still running. They are now cancelled and awaited first.
+- **`diff_runs` advised "Re-run the incomplete side" for two complete runs
+  of different modes**, and called a squad row a "transfer row". The advice
+  now follows the reason.
+
 ### Changed
 
 - CI only: the canary now runs weekly (Mondays 07:37 UTC) and on a manual dispatch, with its optional secrets `TRANSFERMARKT_CDP_ENDPOINT`, `TRANSFERMARKT_PROXY` passed on every run; the daily schedule is removed.

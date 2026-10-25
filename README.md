@@ -49,7 +49,8 @@ python3 playwright_scraper.py --mode market-values
 # A club's full squad — id is transfermarkt's own numeric club id
 python3 playwright_scraper.py --mode club-squad --club-id 281 --season 2025
 
-# The latest-transfers ledger, up to 3 pages (safe to run with --concurrency).
+# The latest-transfers ledger, up to 3 pages, 3 workers (a local browser:
+# over --cdp-endpoint --concurrency is refused — one profile, one connection).
 # The default view is filtered to players valued EUR 500k+ and can fit on one
 # page; see "How deep that listing goes" below.
 python3 playwright_scraper.py --mode transfers --pages 3 --concurrency 3
@@ -187,7 +188,7 @@ ever ships a live one — not the README, not `.env.example`, not a workflow.
 every profile, and this repo ships the client that fetches it:
 
 ```bash
-python3 tools/browser_profile_client.py accounts                  # ids and proxyMode
+python3 tools/browser_profile_client.py accounts                  # one row per account: id, proxyMode, profiles
 python3 tools/browser_profile_client.py use --account-id N --write-env
 ```
 
@@ -260,7 +261,7 @@ ignored the variable.
 
 ---
 
-## The gallery pagination trap (market-values) — rare, not the default
+## The gallery pagination trap (market-values) — and how it is handled
 
 First measured **2026-09-10** against
 `/spieler-statistik/wertvollstespieler/marktwertetop`, and originally
@@ -292,8 +293,21 @@ independently addressable, same as transfers.** Only when page 1's own
 next-link disagrees (the rare gallery shape) does this scraper fall back to
 chaining the site's own pagination link one page at a time **inside a
 single browser session**, exactly as before — the fallback did not change,
-only when it engages did. `--mode market-values --pages N` with `N > 1`
-uses whichever path page 1 says to use; `--concurrency` remains
+only when it engages did.
+
+> **Corrected 2026-10-21.** The gallery shape is not rare, and chaining it
+> does not work. It appeared on **3 of 8** market-values runs that day (a
+> local browser and the Scraping Browser alike), and its link —
+> `…/page/10//page/2` — answered 404 each time, so every one of those runs
+> stopped at page 1 with exit 6. In the same sessions the plain `?page=2`
+> and `?page=3` served the real pages (25 rows each, 0 players shared with
+> page 1 or each other; 3 of 3 gallery sessions). Since then market-values
+> **ignores a gallery next-link and fetches `?page=N`** — the log says so
+> ("page 1's next-link is the gallery shape …") — and the repeated-page
+> check below still reports a page the site did not serve.
+
+`--mode market-values --pages N` with `N > 1` therefore always uses
+`?page=N`; `--concurrency` remains
 `transfers`-only regardless (see Engines below) — not because this mode is
 usually unaddressable, but because running several workers concurrently
 against a mode that can rarely switch shape mid-run is untested here.
@@ -387,10 +401,10 @@ different text, normalised into a single English vocabulary:
 | Host | Locale | Money format | Position/nationality text |
 |---|---|---|---|
 | `www.transfermarkt.com` | English | `€220.00m` | English (nothing to translate) |
-| `www.transfermarkt.de` | German | `220,00 Mio. €` | Translated (10 positions, 14 nationalities measured) |
-| `www.transfermarkt.world` | Russian | `220,00 млн €` | Translated (7 positions, 8 nationalities measured) |
-| `www.transfermarkt.co.kr` | Korean | `220.00 mil. €` | Translated (7 positions, 8 nationalities measured) |
-| `www.transfermarkt.jp` | Japanese | `220.00 m €` | Positions translated; nationality text is already English on this locale (a real site asymmetry, not a gap) |
+| `www.transfermarkt.de` | German | `220,00 Mio. €` | Translated (all 16 positions, all 254 countries the site lists) |
+| `www.transfermarkt.world` | Russian | `220,00 млн €` | Translated (all 16 positions, all 254 countries) |
+| `www.transfermarkt.co.kr` | Korean | `220.00 mil. €` | Translated (all 16 positions, all 254 countries) |
+| `www.transfermarkt.jp` | Japanese | `220.00 m €` | Positions translated (all 16); nationality text is already English on this locale, except 6 names it prints differently ("Turkey", "Grenadaj", …), which are mapped |
 
 There is no `--country` flag, and the site's language is not chosen by a
 flag either — same convention as this family's `mediamarkt-scraper`. The
@@ -418,11 +432,16 @@ What gets normalised, and how:
 - **Money** — `parse_market_value` picks the decimal separator, symbol
   position and suffix vocabulary per locale. Every value is EUR in every
   locale (Transfermarkt does not convert); only the formatting differs.
-- **Position / nationality** — translated to English via a per-locale
-  lookup table built from real captures (a shared player's row matched
-  across a locale and the English site, text diffed at the identical DOM
-  position). An untranslated string (not yet measured for that locale)
-  passes through unchanged with a logged warning — never guessed.
+- **Position / nationality** — translated to English via per-locale
+  tables taken from the site itself: the ranking page's own filter lists
+  (`land_id`, 254 countries; `spielerposition_id`, 16 positions) carry the
+  same option values on every host, so pairing by value gives the complete
+  vocabulary (`locale_names.py`, regenerated by
+  `tools/build_locale_names.py`). Checked against every pair measured from
+  players' rows — 0 disagreements on 2026-10-21. A name the site adds later
+  passes through unchanged with a logged warning — never guessed. Some of
+  the site's own translations are odd (Korean "이동" for Togo) and are kept
+  as the site prints them, because that is what a player's flag says.
 - **Player-detail labels** (joined/contract-expires/full-name/place-of-birth/
   the market-value "last update" prefix) — read via the locale's own label
   text, measured from a live capture of the same player (Erling Haaland,
@@ -436,12 +455,11 @@ What gets normalised, and how:
 
 **Known gaps, stated rather than silently assumed:**
 
-- **Coverage is uneven per locale.** German has the fullest tables (10
-  positions from a full squad-page capture); Russian/Korean/Japanese have
-  7-8 (from an attacker-heavy top-25 ranking page — no goalkeeper or
-  full-back sampled yet for those three). A position/nationality this repo
-  has not seen yet passes through untranslated with a logged warning rather
-  than a guessed translation.
+- **Country and position names are a snapshot of the site's lists**
+  (2026-10-21). 8 ranking pages and 3 club squads per host logged no
+  untranslated name with them; a country the site adds later would pass
+  through untranslated, with a warning, until `tools/build_locale_names.py`
+  is re-run.
 - **The transfers listing's "Loan transfer"/"Free transfer" text is matched
   in English only** — no non-English transfers-listing capture exists yet
   to measure the de/ru/ko/ja equivalents from. A locale transfers page
@@ -552,12 +570,8 @@ all four page kinds returned complete, current HTML with no challenge markup
 `product_parser`'s own docstring). `--cdp-url` is wired in for the day that
 stops being true, but this repo has not needed it.
 
-Two things it cannot do that the browser engines can:
+One thing it cannot do that the browser engines can:
 
-- **No `--mode market-values --pages N > 1`.** That mode's pagination needs
-  a stateful browser session (see "the gallery pagination trap" above); a
-  stateless HTTP client cannot chain it. Asking for more than page 1 here is
-  exit `6` (partial), not a silent short result.
 - **No `--fingerprint`.** Fingerprint spoofing patches a live browser
   context; there is no browser context here to patch (route through
   `--cdp-url` if a browser identity matters — the remote session already
@@ -578,7 +592,8 @@ above). A worker owns one browser and one exit for its lifetime, and each
 starts on a *different* exit, so no thread needs a lock. Page 1 is always
 fetched alone, before the rest are dispatched.
 
-`--concurrency` is refused outright with `--cdp-endpoint` (a Scraping
+`--concurrency` is refused outright (exit 2) with `--cdp-endpoint` — also
+when the endpoint comes from `TRANSFERMARKT_CDP_ENDPOINT` in `.env` (a Scraping
 Browser profile allows one live connection at a time — several `pid`s, one
 run each, is the way) and warns rather than refuses with no proxy pool (N
 workers then send N× the traffic from one address).
@@ -616,7 +631,7 @@ push for the same four reasons.
 | `2` | Bad usage (including a URL that is not a supported Transfermarkt host) |
 | `3` | Blocked — a bot-check/challenge page or a refusal. Never a server error: an HTTP 5xx is retried and then reported as `target_http_5xx` (exit 5 or 6) |
 | `4` | Zero rows, and the site's answer really was nothing: an empty squad, or the club, player or URL asked for does not exist (the site's own 404 page, or a profile id answered with a redirect elsewhere; `stop_reason: not_found`) |
-| `5` | Nothing obtained. Either the content was never fetched or read — a load timeout, a dead exit, a server error from Transfermarkt that outlasted 2 retries (`stop_reason: target_http_5xx`), or a served page that shows rows the parser could not read (`stop_reason: parser_found_nothing`, a markup change) — or a 2Captcha product call failed on its own terms (the Fingerprint API, or a `--cdp-endpoint` connection: bad key, rate limit, a Scraping Browser profile already in use). Distinct from `3` and `4`: nothing can be concluded about the site from it. A captcha-SOLVE failure is deliberately NOT this — it's a warning and the run continues, reporting `3` only if the page really was blocked. |
+| `5` | Nothing obtained. Either the content was never fetched or read — a load timeout, a dead exit, a proxy that refused its login (`stop_reason: proxy_auth_refused`, said before any page is requested), a server error from Transfermarkt that outlasted 2 retries (`stop_reason: target_http_5xx`), or a served page that shows rows the parser could not read (`stop_reason: parser_found_nothing`, a markup change) — or a 2Captcha product call failed on its own terms (the Fingerprint API, or a `--cdp-endpoint` connection: bad key, rate limit, a Scraping Browser profile already in use). Distinct from `3` and `4`: nothing can be concluded about the site from it. A captcha-SOLVE failure is deliberately NOT this — it's a warning and the run continues, reporting `3` only if the page really was blocked. |
 | `6` | Partial — some pages fetched, then stopped early (including a later page that was refused, answered 404, parsed to nothing while showing rows, answered 5xx after 2 retries, or served an earlier page again although the page before it linked onward: `stop_reason: page_repeated`). Not necessarily a fault: for `--mode market-values`, this is the expected result on the rare run whose pagination link needs the fallback chain (see "the gallery pagination trap") and runs out of it; on the common run it does not happen at all. |
 
 **A run that finds nothing writes nothing.** Last known good output is not
@@ -684,11 +699,24 @@ Stated plainly rather than discovered the hard way:
   pairing identical under `diff_runs.py`. Whether a known-datacentre IP is
   treated differently is a question about an address, and
   `tools/waf_probe.sh` is how you answer it for yours.
-- **The WAF solve path has never met a live challenge.** `AmazonTaskProxyless`
-  is implemented and its schema is verified against the API with a control,
-  but no challenge has appeared to solve since it was written, so the
-  end-to-end path is untested. Stated here rather than left to be
-  discovered: this is "not yet exercised", not a verdict on the solver.
+- **An AWS WAF captcha met on 2026-10-21 was not cleared — by any path.**
+  Singapore exits drew the captcha on every request (curl 3 of 3 per
+  session; the Scraping Browser on an SG profile every time). Measured on
+  those exits:
+  - the Scraping Browser's own auto-solve reported `solveFinished` (6-30 s),
+    and the reload served the captcha again — the engine now passes it to
+    the solver API instead of stopping there;
+  - `AmazonTask` through the page's own exit returned a real
+    `captcha_voucher` in ~10 s in 4 of 6 tries (the other 2:
+    `existing_token` only), $0.00145 each;
+  - the voucher is not the cookie: set raw it was refused; exchanged at
+    `/voucher` beside the page's `challenge.js` it gives a token (HTTP 200),
+    which the engine now does — and the page's OWN integration,
+    `ChallengeScript.submitCaptcha(voucher)`, accepted it too;
+  - after each of those, the page served the captcha again.
+  So on those exits nothing this repo or the site's own widget does gets
+  through, and why is not isolated. Other exits drew no captcha at all
+  that day; use another profile or exit when one does.
 - **Selenium cannot use the Scraping Browser API** (see the engine limits
   above), so on an address that meets the WAF, Playwright or pyppeteer is
   the engine to reach for. The solve path itself is now identical in all
@@ -699,13 +727,12 @@ Stated plainly rather than discovered the hard way:
 - **Locale coverage is uneven and the transfers-listing fee-type text is
   English-only** — see "Locales" above for exactly what is and is not
   translated per locale.
-- **`scraper_api_client.py` (the browserless fourth engine) only paginates
-  `--mode transfers`.** `--mode market-values --pages N > 1` needs a
-  stateful browser session (see "the gallery pagination trap") that this
-  HTTP-only client, by design, does not keep — it fetches page 1 and
-  reports `partial` (exit 6) rather than silently stopping short and
-  calling that `complete`. Use one of the three browser engines for that
-  case.
+- **`scraper_api_client.py` paginates market-values by `?page=N` only.**
+  Since 2026-10-21 that is every engine's path for this mode (see "the
+  gallery pagination trap"), so `--mode market-values --pages 2` reads 50
+  rows there too. Should page 1 ever carry a next-link that is neither the
+  plain nor the gallery shape, this client stops at page 1 with exit 6
+  (`stateless_pagination_unavailable`) rather than guess.
 - **Three modes, not the old scraper's ~24 categories.** This is a
   deliberate v0.1 scope decision (market-values, club-squad, transfers,
   plus player detail as the natural fourth mode the other three need to
@@ -716,9 +743,11 @@ Stated plainly rather than discovered the hard way:
 
 ## Troubleshooting
 
-**`--mode market-values --pages N` reports `partial` past page 1.** Expected
-in some cases, not necessarily a bug — see the gallery pagination trap. Check
-`stop_reason` in the `.meta.json` sidecar.
+**`--mode market-values --pages N` reports `partial` past page 1.** Check
+`stop_reason` in the `.meta.json` sidecar. `page_not_found` on page 2 was
+the gallery pagination trap until 2026-10-21 and should no longer happen —
+if it does, the site has a third pagination shape; please open an issue
+with the run's log.
 
 **Every page comes back exit 3.** Run `bash tools/waf_probe.sh 10` from the
 same machine. If it reports challenges, the address is the problem, not the

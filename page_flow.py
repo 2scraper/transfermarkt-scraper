@@ -77,6 +77,15 @@ safe behavior, now used only when it is actually needed rather than on
 every run. Nothing about the fallback path changed; only the gate deciding
 when to use it did.
 
+**Re-measured 2026-10-21: the gallery shape is not rare, and chaining it
+does not work.** It appeared on 3 of 8 market-values runs (local Playwright
+and the Scraping Browser alike), and the chained link — `…/page/10//page/2`
+— answered 404 every time, so each of those runs ended at page 1 with exit
+6. In the same sessions the plain `?page=2` and `?page=3` served the real
+pages (25 rows each, 0 players shared with page 1 or each other, 3 of 3
+gallery sessions). So for market-values the gallery link is now ignored and
+`?page=N` planned; `PageSequence` still reports a page that repeats.
+
 `--concurrency` remains `transfers`-only regardless (see
 `CONCURRENCY_CAPABLE_MODES` in each engine) — not because market-values
 pagination is unaddressable (it usually is, per above), but because this
@@ -434,6 +443,8 @@ def failure_reason(outcome) -> str:
     """The stop reason a failed page outcome gives the run. One place, so the
     four engines and their concurrent paths cannot name the same failure
     differently."""
+    if getattr(outcome, "proxy_auth_refused", False):
+        return "proxy_auth_refused"
     if getattr(outcome, "load_failed", False):
         return "page_load_timeout"
     if getattr(outcome, "parse_failed", False):
@@ -500,11 +511,23 @@ class PageSequence:
         key_set = set(keys)
         same_as = next((p for p, (ks, _n) in sorted(self._pages.items())
                         if p < page_num and ks == key_set), None)
-        before = self._pages.get(page_num - 1)
+        # The site answers any number past the end with the LAST page, so a
+        # page that repeats page J exactly, with nothing served between them,
+        # puts the pages between past the end as well: the last real page is
+        # J, and J's own next link says whether the listing ended there.
+        # Measured 2026-10-21 under --concurrency 4: pages 1-4 served, 5
+        # timed out, 6 = page 4. Read as "5 promised", that complete listing
+        # came out partial (pages_failed [5], listing_pages 5).
+        last = page_num - 1
+        if same_as is not None and not any(p in self._pages
+                                           for p in range(same_as + 1, page_num)):
+            last = same_as
+        before = self._pages.get(last)
         promised = before is None or before[1] is not None
         self.repeat = {
             "page": page_num,
             "same_as": same_as,
+            "last": last,
             "stop_reason": STOP_PAGE_REPEATED if promised else STOP_LISTING_ENDED,
         }
         logger.info(
@@ -518,9 +541,11 @@ class PageSequence:
         return self.repeat
 
     def counts(self, page_num: int) -> bool:
-        """False for the repeated page and every page after it: they are not
-        pages of this listing and are not counted as completed."""
-        return self.repeat is None or page_num < self.repeat["page"]
+        """False for every page past the listing's last real page — the
+        repeated one, any unserved page before it that the repeat shows was
+        past the end too, and everything after: they are not pages of this
+        listing and are not counted as completed (or as failed)."""
+        return self.repeat is None or page_num <= self.repeat["last"]
 
     def meta(self) -> dict:
         """Sidecar keys describing the repeat, empty when there was none."""
@@ -528,7 +553,7 @@ class PageSequence:
             return {}
         return {"repeated_page": self.repeat["page"],
                 "repeat_of_page": self.repeat["same_as"],
-                "listing_pages": self.repeat["page"] - 1}
+                "listing_pages": self.repeat["last"]}
 
 
 def listing_filter_meta(mode: str, url: Optional[str]) -> dict:
@@ -542,6 +567,41 @@ def listing_filter_meta(mode: str, url: Optional[str]) -> dict:
     floor = min_value_of(url)
     return {"min_market_value_eur": floor,
             "market_value_filter": "url" if floor is not None else "site_default"}
+
+
+def fill_from_past_end(outcomes) -> list:
+    """Give a page that was not served the rows a LATER page served for it.
+
+    Workers take pages past the end at once, and the site answers any of
+    them with the last page — its pager naming that page as current
+    (product_parser.served_page_number). So when page L failed (a timeout,
+    measured 2026-10-21 under --concurrency 4) and page L+1 came back saying
+    "I am page L", page L's rows were obtained after all. Its outcome takes
+    them, the later page then reads as a repeat of L, and the listing ends at
+    L complete — instead of `partial` with every row in hand.
+
+    Only a failed page is filled, and only from a page that names it
+    exactly. Returns the page numbers filled."""
+    by_num = {o.page_num: o for o in outcomes}
+    filled = []
+    for o in sorted(outcomes, key=lambda x: x.page_num):
+        served = getattr(o, "served_page", None)
+        if not o.ok or not served or served >= o.page_num:
+            continue
+        lost = by_num.get(served)
+        if lost is None or lost.ok:
+            continue
+        for attr in ("rows", "next_url", "state", "final_url", "served_page"):
+            setattr(lost, attr, getattr(o, attr, None))
+        for flag in ("load_failed", "parse_failed", "server_error"):
+            if hasattr(lost, flag):
+                setattr(lost, flag, False)
+        lost.blocked_by = None
+        filled.append(served)
+        logger.info("Page %d was not served, but page %d answered with it "
+                    "(its pager marks page %d current) — using those rows.",
+                    served, o.page_num, served)
+    return filled
 
 
 def settle_repeats(outcomes) -> PageSequence:
@@ -666,8 +726,123 @@ def pagination_is_addressable(mode: str, page1_url: str,
         return True
     from urllib.parse import urlsplit
     if "/page/" in urlsplit(site_next_url).path:
+        # The gallery link itself is broken (`…/page/10//page/2` answers
+        # 404), so chaining it ended every such run at page 1 with exit 6 —
+        # 3 of 8 market-values runs on 2026-10-21, both transports. In the
+        # same sessions the plain `?page=2` and `?page=3` served the real
+        # pages (25 rows each, 0 shared with page 1 or each other, 3 of 3
+        # gallery sessions), so for market-values the constructed URL is
+        # used instead. PageSequence still catches a page that repeats.
+        # Measured on market-values only; other modes keep refusing.
+        if mode == "market-values":
+            logger.info("page 1's next-link is the gallery shape (%s) — it "
+                        "answers 404, so page 2+ are fetched as ?page=N.",
+                        urlsplit(site_next_url).path[-40:])
+            return True
         return False
     return _query_only(site_next_url) == _query_only(page_url(page1_url, 2))
+
+
+# ---------------------------------------------------------------------------
+# Why a --cdp-endpoint connection failed
+# ---------------------------------------------------------------------------
+# The Scraping Browser API answers a refused WebSocket upgrade with HTTP 500
+# and ONE word in the body, which Playwright repeats in its error. Each is
+# immediate, not a timeout, so a short retry costs seconds, not the profile
+# (a retry that TIMES OUT is what holds a profile; see the README). Measured
+# 2026-10-21 on fresh profiles:
+#   profile_locked  the previous run on this pid had ended gracefully a
+#                   moment before; the next attempt (after it) connected.
+#   proxy_timeout   the profile's exit did not answer; the next run, on the
+#   proxy_error     same profile, connected and scraped.
+# And 2026-10-25, one of three parallel connects on a fresh account:
+#   fingerprint_error  the service could not give the profile a fingerprint;
+#                      the same run on the same profile a minute later
+#                      connected and scraped.
+CDP_REFUSAL_RETRIES = {"profile_locked": (3, 3.0),
+                       "proxy_timeout": (1, 3.0),
+                       "proxy_error": (1, 3.0),
+                       "fingerprint_error": (1, 3.0)}
+
+
+def cdp_refusal(error_text: str) -> Optional[str]:
+    """The refusal word in a failed CDP connect's error, if there is one."""
+    text = (error_text or "").lower()
+    return next((w for w in CDP_REFUSAL_RETRIES if w in text), None)
+
+
+def cdp_retry_delay(error_text: str, attempt: int) -> Optional[float]:
+    """Seconds to wait before connect attempt `attempt + 1`, or None to give
+    up. Grows per attempt so a lock released late is still caught."""
+    word = cdp_refusal(error_text)
+    if word is None:
+        return None
+    retries, delay = CDP_REFUSAL_RETRIES[word]
+    return delay * attempt if attempt <= retries else None
+
+
+def proxy_auth_refused_message(masked_exit: str, sends_credentials: bool = True) -> str:
+    """What to say when the exit answered CONNECT with 407 (see
+    proxy_pool.connect_status). Said before any page is requested: the
+    browser itself would only have waited out the load timeout."""
+    if not sends_credentials:
+        return ("Proxy %s answered 407 Proxy Authentication Required: it needs "
+                "a login, and Selenium cannot send one. Nothing was requested "
+                "from the site. Use playwright_scraper.py or "
+                "puppeteer_scraper.py for an authenticated proxy, or a proxy "
+                "that authorises this machine by IP." % masked_exit)
+    return ("Proxy %s answered 407 Proxy Authentication Required: it refused "
+            "this login or password. Nothing was requested from the site. "
+            "Check the credentials in --proxy / --proxy-file / "
+            "TRANSFERMARKT_PROXY — a 2Captcha proxy login belongs to the key "
+            "that bought it." % masked_exit)
+
+
+def cdp_connect_hint(error_text: str) -> str:
+    """The next step after a failed CDP connect, chosen by what the error
+    says. One hint for every failure used to blame a busy profile even for a
+    host that does not resolve (`getaddrinfo ENOTFOUND`, 2026-10-21).
+
+    A 500 on the WebSocket upgrade has two causes that look identical from
+    the driver, which shows only the status: the profile is held by another
+    run (`profile_locked`) or the profile's own exit failed (`proxy_error`),
+    both met on 2026-10-21."""
+    text = (error_text or "").lower()
+    if any(s in text for s in ("enotfound", "getaddrinfo", "name or service not known",
+                               "nodename nor servname", "econnrefused",
+                               "connection refused", "ehostunreach", "enetunreach")):
+        return ("The endpoint's host could not be reached — check the host and "
+                "port in --cdp-endpoint / TRANSFERMARKT_CDP_ENDPOINT and this "
+                "machine's network. Nothing reached the Scraping Browser API.")
+    word = cdp_refusal(text)
+    if word == "profile_locked":
+        return ("profile_locked: another run still holds this `pid` (one live "
+                "connection per profile), and it was still held after the "
+                "retries. Wait for that run to finish, or use a different pid "
+                "— one profile per parallel run.")
+    if word in ("proxy_timeout", "proxy_error"):
+        return ("%s: this profile's exit did not work (still after a retry). "
+                "Run again in a minute; if it persists, check the account's or "
+                "profile's proxy with `tools/browser_profile_client.py accounts` "
+                "/ `profiles`." % word)
+    if word == "fingerprint_error":
+        return ("fingerprint_error: the Scraping Browser could not give this "
+                "profile a fingerprint (still after a retry). That is on the "
+                "service's side, not the site's or the exit's: run again in a "
+                "minute; if it persists, try another profile.")
+    if "401" in text or "unauthorized" in text:
+        return ("The Scraping Browser API refused the login or password in the "
+                "endpoint. Fetch a fresh one: python3 tools/browser_profile_client.py "
+                "use --account-id N --write-env")
+    if "500" in text:
+        return ("A 500 on connect means the profile is busy — another run still "
+                "holds this `pid` (one live connection per profile) — or the "
+                "profile's exit failed (proxy_error). Wait for the other run, "
+                "or use a different pid; if it persists, check the account's "
+                "proxy with `tools/browser_profile_client.py accounts`.")
+    return ("Nothing reached the target site. A Scraping Browser profile allows "
+            "one live connection at a time, so another run on this `pid` is the "
+            "first thing to rule out.")
 
 
 # ---------------------------------------------------------------------------

@@ -845,6 +845,13 @@ def test_locale_money_parsing():
         ("160,00 Mio. €", "de", (160_000_000.0, "EUR")),
         ("-", "de", (None, None)),
         ("", "ru", (None, None)),
+        # Thousands, measured 2026-10-25 on Bayern's squad page (club 27),
+        # one player (id 40680) valued EUR 500k in every locale. ko and ja
+        # had been guessed as "th." and "k" and read as None.
+        ("500 Tsd. €", "de", (500_000.0, "EUR")),
+        ("500 тыс €", "ru", (500_000.0, "EUR")),
+        ("500 k €", "ko", (500_000.0, "EUR")),
+        ("500 千 €", "ja", (500_000.0, "EUR")),
     ]
     for text, locale, expected in cases:
         got = parse_market_value(text, locale=locale)
@@ -907,6 +914,88 @@ def test_locale_translation():
     ok &= check("Japanese nationality text is already English and passes "
                 "through unchanged",
                 translate_nationality("Norway", locale="ja") == "Norway")
+
+    # The 2026-10-21 supplement (200 players per host, matched by sku). Before
+    # it, 8 German ranking pages logged 31 untranslated nationalities and a
+    # position; the site's own odd translations are kept as printed.
+    supplement_cases = [
+        (translate_nationality, "de", "Türkei", "Türkiye"),
+        (translate_nationality, "de", "Senegal", "Senegal"),
+        (translate_nationality, "de", "Vereinigte Staaten", "United States"),
+        (translate_nationality, "ru", "Того", "Togo"),
+        (translate_nationality, "ko", "이동", "Togo"),
+        (translate_nationality, "ko", "왜냐하면", "Cuba"),
+        (translate_nationality, "ja", "Turkey", "Türkiye"),
+        (translate_nationality, "ja", "Grenadaj", "Grenada"),
+        (translate_position, "de", "Linkes Mittelfeld", "Left Midfield"),
+        (translate_position, "ru", "Вратарь", "Goalkeeper"),
+        (translate_position, "ko", "골키퍼", "Goalkeeper"),
+        (translate_position, "ja", "左サイドバック", "Left-Back"),
+    ]
+    for fn, locale, native, expected in supplement_cases:
+        ok &= check("%s(%r, locale=%r) == %r (2026-10-21 supplement)"
+                    % (fn.__name__, native, locale, expected),
+                    fn(native, locale=locale) == expected)
+    import product_parser as _pp
+    ok &= check("the supplement contradicts no entry it was merged into "
+                "(every pair agreed when derived; this keeps it so)",
+                all(_pp._NATIONALITY_EN[l][k] == v
+                    for l, t in _pp._NATIONALITY_EN_SUPPLEMENT.items()
+                    for k, v in t.items()))
+
+    # The full lists from the site's own filter <select>s (locale_names.py).
+    # These names were all logged untranslated on three club squads on
+    # 2026-10-21, after the supplement above was in place.
+    for fn, locale, native, expected in (
+            (translate_nationality, "de", "Österreich", "Austria"),
+            (translate_nationality, "de", "Südkorea", "Korea, South"),
+            (translate_nationality, "ru", "Украина", "Ukraine"),
+            (translate_nationality, "ko", "폴란드", "Poland"),
+            (translate_position, "de", "Hängende Spitze", "Second Striker"),
+            (translate_position, "ru", "Оттянутый нап.", "Second Striker"),
+            (translate_position, "ko", "세컨드 스트라이커", "Second Striker")):
+        ok &= check("%s(%r, locale=%r) == %r (site's own list)"
+                    % (fn.__name__, native, locale, expected),
+                    fn(native, locale=locale) == expected)
+    import locale_names
+    ok &= check("locale_names covers every country the site lists, per locale "
+                "(254 on 2026-10-21) and every position (16)",
+                all(len(locale_names.NATIONALITY_EN[l]) >= 250 for l in ("de", "ru", "ko"))
+                and all(len(locale_names.POSITION_EN[l]) == 16 for l in ("de", "ru", "ko", "ja")))
+    ok &= check("...and agrees with every pair measured from players' rows",
+                all(_pp._NATIONALITY_EN[l][k] == v
+                    for l, t in _pp._NATIONALITY_EN_MEASURED.items() for k, v in t.items())
+                and all(locale_names.POSITION_EN[l].get(k) == v
+                        for l, t in _pp._POSITION_EN_MEASURED.items() for k, v in t.items()))
+
+    # The generator itself, on a minimal page: pairs by option VALUE, skips
+    # "All", refuses a list it cannot map unambiguously.
+    sys.path.insert(0, os.path.join(REPO_ROOT, "tools"))
+    import build_locale_names as bln
+
+    def page(countries, positions):
+        opt = lambda d: "".join('<option value="%s">%s</option>' % kv for kv in d.items())
+        return ('<select name="land_id"><option value="0">All</option>%s</select>'
+                '<select name="spielerposition_id"><option value="alle">All</option>%s</select>'
+                % (opt(countries), opt(positions)))
+    pages = {"en": page({"1": "Austria", "2": "Turkiye"}, {"1": "Goalkeeper"}),
+             "de": page({"2": "Türkei", "1": "Österreich"}, {"1": "Torwart"}),
+             "ru": page({"1": "Австрия"}, {"1": "Вратарь"}),
+             "ko": page({"1": "오스트리아"}, {"1": "골키퍼"}),
+             "ja": page({"1": "Austria", "2": "Turkey"}, {"1": "ゴールキーパー"})}
+    t = bln.build(pages)
+    ok &= check("build_locale_names pairs by option value, not by order",
+                t["nationality"]["de"] == {"Türkei": "Turkiye", "Österreich": "Austria"}
+                and t["position"]["ru"] == {"Вратарь": "Goalkeeper"})
+    ok &= check("...keeps only the Japanese names that differ from English",
+                t["nationality"]["ja"] == {"Turkey": "Turkiye"})
+    try:
+        bln.options('<select name="land_id"><option value="1">X</option>'
+                    '<option value="2">X</option></select>', "land_id")
+        refused = False
+    except SystemExit:
+        refused = True
+    ok &= check("...and refuses a list with a duplicate name", refused)
 
     # An untranslated string (not in the table) must pass through AS-IS,
     # never crash and never get mis-translated by a guess.
@@ -1561,19 +1650,28 @@ def test_page_flow():
     ok &= check("...and the same holds with no next-link at all (nothing "
                 "contradicts the construction)",
                 page_flow.pagination_is_addressable("market-values", MARKET_VALUES_URL, None))
-    # The rare gallery shape (a real capture, 2026-09-10) still correctly
-    # falls back to link-chaining: its next-link disagrees with what
-    # page_url() would build.
+    # The gallery shape (a real capture, 2026-09-10). Chaining its doubled
+    # link answered 404 and ended 3 of 8 runs at page 1 on 2026-10-21, while
+    # ?page=N in the same sessions served the real pages — so market-values
+    # plans ?page=N even then.
     _gallery_next_link = (
         "https://www.transfermarkt.com/spieler-statistik/wertvollstespieler/"
         "marktwertetop/plus/0/galerie/0ausrichtung%3DSturm%26spielerposition_id"
         "%3Dalle%26altersklasse%3Dalle%26jahrgang%3D0%26land_id%3D72%26"
         "kontinent_id%3D0%26yt0%3DShow/page/8/page/3//page/2")
-    ok &= check("...but a gallery-shaped next-link (real capture) is "
-                "correctly read as NOT addressable, falling back to "
-                "chaining the site's own link",
-                not page_flow.pagination_is_addressable(
+    ok &= check("a gallery-shaped next-link (real capture) no longer sends "
+                "market-values down the site's own 404ing link: ?page=N is "
+                "planned instead",
+                page_flow.pagination_is_addressable(
                     "market-values", MARKET_VALUES_URL, _gallery_next_link))
+    ok &= check("...and the plan for that run is the plain ?page=N, never the "
+                "gallery link",
+                page_url(MARKET_VALUES_URL, 2).endswith("?page=2")
+                and "/page/" not in page_url(MARKET_VALUES_URL, 2))
+    ok &= check("...while another mode with a path-encoded page still chains "
+                "(the gallery fix is measured on market-values only)",
+                not page_flow.pagination_is_addressable(
+                    "transfers", TRANSFERS_URL, _gallery_next_link))
 
     # transfers: addressable when the site's own next-link agrees with the
     # constructed page-2 URL; not addressable (falls back to link-chaining)
@@ -2661,6 +2759,18 @@ def test_minted_proxy_sessions():
                 "to it by accident -- the session segment is this vendor's "
                 "convention, not a general proxy feature",
                 not proxy_pool.is_2captcha_gateway(OTHER))
+    ok &= check("the same gateway under its other brand domain "
+                "(eu.proxy.rucaptcha.com) is recognised too -- it was refused, "
+                "measured 2026-10-21 with distinct exits per session",
+                proxy_pool.is_2captcha_gateway(
+                    url("acct-zone-custom-region-DE-session-AAAAAAAAA-sessTime-10:pw@eu.proxy.rucaptcha.com:2334")))
+    try:
+        proxy_pool.mint_sessions(OTHER, 2)
+        refusal = ""
+    except proxy_pool.ProxyError as e:
+        refusal = str(e)
+    ok &= check("...and the refusal for a non-gateway names both domains",
+                ".proxy.2captcha.com" in refusal and ".proxy.rucaptcha.com" in refusal)
     ok &= check("a malformed URL is not mistaken for a gateway",
                 not proxy_pool.is_2captcha_gateway("http://u:p@h:notaport")
                 and not proxy_pool.is_2captcha_gateway(""))
@@ -2870,6 +2980,36 @@ def test_browser_profile_client():
                 isinstance(bpc.safe(response)["data"], dict)
                 and set(bpc.safe(response)["data"]) == {"0", "1"})
 
+    # `accounts` listed every dict in the response, at any depth: on a live
+    # account (2026-10-21) 21 lines mixing accounts, their proxy accounts,
+    # profiles and seven identical `id=1 name=2captcha` projects, without the
+    # proxyMode the README tells the reader to check there.
+    import contextlib
+    import io
+    nested = json.loads(json.dumps(response))
+    for acc in nested["data"].values():
+        acc["project"] = {"id": 1, "code": "2captcha", "name": "2captcha"}
+        acc["profilesCount"] = 2
+    saved_call = bpc._call
+    bpc._call = lambda method, path, key, **kw: nested
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            bpc.cmd_accounts(type("A", (), {"raw": False})(), "k")
+    finally:
+        bpc._call = saved_call
+    listing = out.getvalue()
+    rows = [l for l in listing.splitlines() if re.match(r"\s+\d+\s", l)]
+    ok &= check("accounts lists the accounts only: one row each, no nested "
+                "profile or project (got %d row(s))" % len(rows),
+                len(rows) == 2 and "abc123" not in listing
+                and "2captcha" not in listing)
+    ok &= check("...with proxyMode beside each id, as the README promises",
+                any("96418" in l and "none" in l for l in rows)
+                and any("96419" in l and "our_proxy" in l for l in rows))
+    ok &= check("...and no credential in it",
+                PASSWORD not in listing and LOGIN not in listing)
+
     # mask_url must never raise: it is the last thing between a password and
     # a log, and it is called exactly when the value is already suspect.
     for bad in ("", "not a url", "ws://", "ws://[oops", "ws://u:p@h:notaport"):
@@ -2992,9 +3132,11 @@ def test_scraper_api_client():
         # page_flow.pagination_is_addressable off page 1's own next-link
         # rather than assuming either way. Two fixtures, one per shape:
 
-        # 1. The rare "gallery" shape (a real capture, 2026-09-10): page 1's
-        # own next-link does NOT match what page_url() would build -- exit 6
-        # (partial), only page 1 fetched.
+        # 1. The "gallery" shape (a real capture, 2026-09-10): page 1's own
+        # next-link is the doubled path that answers 404. It used to end the
+        # run at page 1 (exit 6, stateless_pagination_unavailable); since
+        # ?page=N serves the real page 2 in such sessions (measured
+        # 2026-10-21), page 2 is fetched by the constructed URL instead.
         gallery_next = ("https://www.transfermarkt.com/spieler-statistik/wertvollstespieler/"
                         "marktwertetop/plus/0/galerie/0ausrichtung%3DSturm%26spielerposition_id"
                         "%3Dalle%26altersklasse%3Dalle%26jahrgang%3D0%26land_id%3D72%26"
@@ -3006,21 +3148,24 @@ def test_scraper_api_client():
         gallery_calls = []
         def _gallery_fetch(args, url, timeout):
             gallery_calls.append(url)
-            return fixture_gallery, 200, {}
+            if url == a.url:
+                return fixture_gallery, 200, {}
+            return FIX_CLUB_SQUAD, 200, {}
         sac.fetch_html = _gallery_fetch
         a = _FakeArgs(mode="market-values", pages=2,
                      url="https://www.transfermarkt.com/spieler-statistik/wertvollstespieler/marktwertetop",
                      out=os.path.join(tmpdir, "out_mv_gallery"))
         rc = sac.scrape(a)
         ok &= check("--mode market-values --pages 2 against a gallery-shaped "
-                    "next-link is exit 6 (partial), only page 1 fetched",
-                    rc == EXIT_PARTIAL and len(gallery_calls) == 1)
+                    "next-link fetches page 2 by ?page=2, never by the 404ing "
+                    "gallery link",
+                    len(gallery_calls) == 2 and gallery_calls[1].endswith("?page=2")
+                    and "/page/" not in gallery_calls[1])
         meta = json.load(open(a.out + ".meta.json", encoding="utf-8"))
-        ok &= check("...and the sidecar says why (stop_reason, not silently "
-                    "'completed')",
-                    meta["stop_reason"] == "stateless_pagination_unavailable"
-                    and meta["status"] == "partial"
-                    and meta["pages_completed"] == 1)
+        ok &= check("...and it is a complete run (was partial, "
+                    "stateless_pagination_unavailable)",
+                    rc == 0 and meta["status"] == "complete"
+                    and meta["pages_completed"] == 2)
 
         # 2. The common, plain-?page=N shape: page 1's own next-link DOES
         # match page_url()'s construction, so this engine actually fetches
@@ -4227,6 +4372,23 @@ def test_atomic_writes_and_modes():
         write_run_meta(meta, {"status": "complete"})
         ok &= check("the run-metadata sidecar goes through the same writer",
                     json.load(open(meta + ".meta.json"))["status"] == "complete")
+        # --out live/x before `live/` existed: the run gathered its rows and
+        # then died with FileNotFoundError (exit 1) at the write, losing them
+        # (measured 2026-10-21 on af2c896). The write makes the directory.
+        nested = os.path.join(tmp, "not", "yet", "there", "out")
+        try:
+            save(good, nested, "both")
+            written = all(os.path.exists(nested + s) for s in (".json", ".csv"))
+        except OSError:
+            written = False
+        ok &= check("--out into a directory that does not exist yet creates it "
+                    "instead of losing the gathered rows", written)
+        try:
+            write_run_meta(os.path.join(tmp, "meta_dir", "m"), {"status": "complete"})
+            meta_written = True
+        except OSError:
+            meta_written = False
+        ok &= check("...and the sidecar likewise", meta_written)
         src = open(os.path.join(REPO_ROOT, "output_writer.py"), encoding="utf-8").read()
         ok &= check("no writer in output_writer.py truncates its target in place",
                     'open(path, "w"' not in src.replace('`open(path, "w")`', ""))
@@ -4729,7 +4891,7 @@ class _ListingSession(_FakeSession):
 def _run_listing(modname, url, pages, html_for_page, extra_argv=()):
     """Run one entry point's real scrape() for --mode transfers with the
     fetch replaced by real captures. Returns (rc, meta, row skus)."""
-    from product_parser import next_page_link, page_number_from_url
+    from product_parser import next_page_link, page_number_from_url, served_page_number
     mod = importlib.import_module(modname)
     tmp = tempfile.mkdtemp(prefix="tm_listing_")
     out = os.path.join(tmp, "out")
@@ -4763,6 +4925,9 @@ def _run_listing(modname, url, pages, html_for_page, extra_argv=()):
 
             def fake_fetch(sess, a, pool, page_num, u):
                 html = html_for_page(page_number_from_url(u))
+                if html is None:
+                    # A page that timed out: not served at all.
+                    return mod.PageOutcome(page_num=page_num, url=u, load_failed=True)
                 if hasattr(sess, "page"):
                     sess.page.html, sess.page.url = html, u
                 session.page.html, session.page.url = html, u
@@ -4770,6 +4935,8 @@ def _run_listing(modname, url, pages, html_for_page, extra_argv=()):
                                      state="content")
                 oc.rows = parse_transfers(html, u, page_num=page_num)
                 oc.next_url = next_page_link(html, u)
+                if hasattr(oc, "served_page"):
+                    oc.served_page = served_page_number(html)
                 return oc
 
             patch("_fetch_one_page", fake_fetch)
@@ -4846,6 +5013,13 @@ def test_listing_end_and_repeated_pages(skips):
     seq = page_flow.PageSequence()
     seq.add(1, one1, None)
     verdict = seq.add(2, one2, None)
+    from product_parser import served_page_number
+    ok &= check("served_page_number: a page past the end names the last page "
+                "(?page=401 of a 4-page listing -> 4)",
+                served_page_number(FIX_TRANSFERS_PAGED_PAST_END) == 4)
+    ok &= check("...a real page names itself, and a page with no pager gives None",
+                served_page_number(FIX_TRANSFERS_PAGED_P2) == 2
+                and served_page_number(FIX_TRANSFERS_ONE_PAGE_P1) is None)
     ok &= check("page 2 repeating a page with no next link ends the listing",
                 verdict and verdict["stop_reason"] == page_flow.STOP_LISTING_ENDED
                 and verdict["same_as"] == 1)
@@ -4862,6 +5036,34 @@ def test_listing_end_and_repeated_pages(skips):
     ok &= check("page_repeated is not complete; listing_ended is",
                 page_flow.STOP_PAGE_REPEATED not in COMPLETE_STOP_REASONS
                 and page_flow.STOP_LISTING_ENDED in COMPLETE_STOP_REASONS)
+    # A page past the end that was never served (it timed out), followed by
+    # one that repeats the last page: the site answers ANY number past the
+    # end with the last page, so the unserved one was past the end too.
+    # Measured 2026-10-21, --concurrency 4: pages 1-4 served, 5 timed out,
+    # 6 = page 4 -> the run reported partial, pages_failed [5],
+    # listing_pages 5, with every row gathered.
+    seq = page_flow.PageSequence()
+    seq.add(1, p1, "next")
+    seq.add(2, p2, "next")
+    seq.add(3, last, None)
+    verdict = seq.add(5, last, None)
+    ok &= check("a repeat of the last page after an unserved page ends the "
+                "listing at the page it repeats",
+                verdict and verdict["stop_reason"] == page_flow.STOP_LISTING_ENDED
+                and verdict["same_as"] == 3)
+    ok &= check("...and the unserved page between them is not counted (so its "
+                "failure cannot make the run partial)",
+                seq.counts(3) and not seq.counts(4) and not seq.counts(5))
+    ok &= check("...and listing_pages is the last real page, not the page "
+                "before the repeat",
+                seq.meta() == {"repeated_page": 5, "repeat_of_page": 3,
+                               "listing_pages": 3})
+    seq = page_flow.PageSequence()
+    seq.add(1, p1, "next")
+    seq.add(2, p2, "next")
+    ok &= check("an unserved page before a repeat of a page that LINKED ONWARD "
+                "is still a page not served",
+                seq.add(4, p2, "next")["stop_reason"] == page_flow.STOP_PAGE_REPEATED)
     seq = page_flow.PageSequence()
     seq.add(1, p1, "next")
     ok &= check("a page with new rows is not a repeat", seq.add(2, p2, "next") is None)
@@ -4935,6 +5137,37 @@ def test_listing_end_and_repeated_pages(skips):
                     and meta.get("pages_completed") == 3
                     and meta.get("repeated_page") == 4 and meta.get("repeat_of_page") == 3
                     and skus == want_paged)
+        if extra:
+            # Workers take pages past the end at once; one of them timing
+            # out must not turn a complete listing partial (2026-10-21).
+            past_end_timeout = lambda n: None if n == 4 else four(n)
+            rc, meta, skus = _run_listing(modname, TRANSFERS_PAGED_URL, 6,
+                                          past_end_timeout, extra)
+            ok &= check("%s: a timeout on a page PAST the end -> still exit 0, "
+                        "listing_ended, 3 pages, all 8 rows, no failed page "
+                        "(got rc=%s %s pages_failed=%s listing_pages=%s)"
+                        % (label, rc, meta.get("stop_reason"), meta.get("pages_failed"),
+                           meta.get("listing_pages")),
+                        rc == 0 and meta.get("stop_reason") == "listing_ended"
+                        and meta.get("pages_completed") == 3
+                        and meta.get("pages_failed") == []
+                        and meta.get("listing_pages") == 3 and skus == want_paged)
+            # The LAST real page times out instead, and the pages past the
+            # end answer with its rows, their pager naming it current — every
+            # row is still in hand (the variant left partial on 2026-10-21).
+            names_3 = FIX_TRANSFERS_PAGED_PAST_END.replace(
+                'page=4" title="Page 4">4</a>', 'page=3" title="Page 3">3</a>')
+            last_timeout = lambda n: None if n == 3 else (paged[n] if n < 3 else names_3)
+            rc, meta, skus = _run_listing(modname, TRANSFERS_PAGED_URL, 6,
+                                          last_timeout, extra)
+            ok &= check("%s: the LAST real page times out, a page past the end "
+                        "serves it -> exit 0, listing_ended, all 8 rows "
+                        "(got rc=%s %s pages_failed=%s listing_pages=%s rows=%d)"
+                        % (label, rc, meta.get("stop_reason"), meta.get("pages_failed"),
+                           meta.get("listing_pages"), len(skus)),
+                        rc == 0 and meta.get("stop_reason") == "listing_ended"
+                        and meta.get("pages_failed") == []
+                        and meta.get("listing_pages") == 3 and skus == want_paged)
         rc, meta, skus = _run_listing(modname, TRANSFERS_PAGED_URL, 3, planted, extra)
         ok &= check("%s: page 1 links to page 2 but page 2 serves page 1 -> "
                     "exit 6, page_repeated, partial (got rc=%s %s %s)"
@@ -5271,6 +5504,415 @@ def test_min_value_flag(skips):
     return ok
 
 
+def test_diff_refusal_advice():
+    group("diff_runs: the refusal's advice follows its reason")
+    ok = True
+    import argparse
+    import contextlib
+    import io
+    import diff_runs
+    tmp = tempfile.mkdtemp(prefix="tm_diffadv_")
+    try:
+        def run(name, mode, status):
+            base = os.path.join(tmp, name)
+            write_json([Player(sku="1", title="A")], base + ".json")
+            write_run_meta(base, {"status": status, "mode": mode,
+                                  "pages_completed": 1, "pages_requested": 1,
+                                  "stop_reason": "completed"})
+            return base + ".json"
+
+        def advice(old, new):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                accepted = diff_runs._check_comparable(argparse.Namespace(old=old, new=new))
+            return accepted, out.getvalue()
+
+        mv = run("mv", "market-values", "complete")
+        cs = run("cs", "club-squad", "complete")
+        part = run("part", "market-values", "partial")
+        accepted, text = advice(mv, cs)
+        ok &= check("two COMPLETE runs of different modes: refused, advised to "
+                    "compare the same --mode, not to re-run an 'incomplete side'",
+                    not accepted and "same --mode" in text
+                    and "incomplete side" not in text)
+        ok &= check("...and not described as a transfer row when neither side "
+                    "is transfers", "transfer row" not in text)
+        accepted, text = advice(mv, part)
+        ok &= check("a partial run of the same mode still gets the re-run advice",
+                    not accepted and "incomplete side" in text and "same --mode" not in text)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return ok
+
+
+def test_cdp_connect_hint():
+    group("a failed --cdp-endpoint connect names the likely cause")
+    ok = True
+    # The live error texts of 2026-10-21 (credentials removed).
+    dns = ("BrowserType.connect_over_cdp: WebSocket error: getaddrinfo "
+           "ENOTFOUND broken.invalid")
+    busy = "BrowserType.connect_over_cdp: WebSocket error: ws://*** 500 Internal Server Error"
+    auth = "WebSocket error: ws://*** 401 Unauthorized"
+    h = page_flow.cdp_connect_hint
+    ok &= check("an unresolvable host is a host problem, not a busy profile",
+                "could not be reached" in h(dns) and "500" not in h(dns)
+                and "pid" not in h(dns))
+    ok &= check("a 500 names both causes met live: a busy pid and a failed exit",
+                "pid" in h(busy) and "proxy_error" in h(busy))
+    ok &= check("a 401 points at the credentials and how to fetch fresh ones",
+                "login or password" in h(auth) and "--write-env" in h(auth))
+    for name in ("playwright_scraper.py", "puppeteer_scraper.py"):
+        src = open(os.path.join(REPO_ROOT, name), encoding="utf-8").read()
+        ok &= check("%s takes its connect hint from page_flow, not a fixed "
+                    "sentence" % name,
+                    "page_flow.cdp_connect_hint(" in src
+                    and "usually means another run still" not in src)
+
+    # The refusal words the API put in the 500's body, 2026-10-21.
+    locked = busy + "\nprofile_locked"
+    exit_down = busy + "\nproxy_timeout"
+    r = page_flow.cdp_retry_delay
+    ok &= check("profile_locked is retried 3 times, waiting longer each time",
+                [r(locked, n) for n in (1, 2, 3, 4)] == [3.0, 6.0, 9.0, None])
+    ok &= check("proxy_timeout / proxy_error once",
+                r(exit_down, 1) == 3.0 and r(exit_down, 2) is None
+                and r(busy + " proxy_error", 1) == 3.0)
+    ok &= check("a host problem or a bare 500 is not retried",
+                r(dns, 1) is None and r(busy, 1) is None)
+    ok &= check("the hint names the refusal it saw",
+                "profile_locked" in h(locked) and "proxy_timeout" in h(exit_down))
+    # 2026-10-25, one of three parallel connects; the step re-run connected.
+    no_fp = busy + "\nfingerprint_error"
+    ok &= check("fingerprint_error is retried once",
+                r(no_fp, 1) == 3.0 and r(no_fp, 2) is None)
+    ok &= check("the fingerprint_error hint names it and blames neither a "
+                "busy pid nor the exit",
+                "fingerprint_error" in h(no_fp) and "another run" not in h(no_fp)
+                and "proxy_error" not in h(no_fp))
+
+    try:
+        import playwright_scraper as ps
+    except ImportError:
+        return ok  # recorded as a skip by the engine groups
+    attempts = []
+
+    class _Ctx:
+        def new_page(self):
+            return type("P", (), {})()
+
+    class _Browser:
+        contexts = [_Ctx()]
+
+    def chromium(errors):
+        class _Chromium:
+            def connect_over_cdp(self, endpoint, timeout):
+                attempts.append(endpoint)
+                if errors:
+                    raise errors.pop(0)
+                return _Browser()
+        return type("PW", (), {"chromium": _Chromium()})()
+
+    saved_sleep = ps.time.sleep
+    ps.time.sleep = lambda s: None
+    args = type("A", (), {"cdp_endpoint": "ws" + "://h:9222", "no_autosolve": True})()
+    try:
+        attempts.clear()
+        ps._connect_remote(chromium([ps.PWError(locked), ps.PWError(locked)]), args)
+        ok &= check("playwright: two profile_locked refusals, then a free "
+                    "profile -> connected on the third attempt",
+                    len(attempts) == 3)
+        for label, err, want in (("ENOTFOUND", ps.PWError(dns), 1),
+                                 ("a connect timeout", ps.PWTimeout("Timeout 30000ms exceeded"), 1),
+                                 ("profile_locked that never clears", None, 4)):
+            attempts.clear()
+            errs = [err] if err is not None else [ps.PWError(locked) for _ in range(5)]
+            try:
+                ps._connect_remote(chromium(errs), args)
+                raised = False
+            except RemoteAPIError:
+                raised = True
+            ok &= check("playwright: %s -> exit-5 error after %d attempt(s) (got %d)"
+                        % (label, want, len(attempts)), raised and len(attempts) == want)
+    finally:
+        ps.time.sleep = saved_sleep
+    return ok
+
+
+def test_proxy_auth_refused(skips):
+    group("a proxy that refuses the login is named at once, not waited out")
+    ok = True
+    import proxy_pool as pp
+
+    class _Sock:
+        """Stands in for socket.create_connection: records what was sent."""
+        def __init__(self, reply=b"", fail=False):
+            self.reply, self.fail, self.sent, self.addr = reply, fail, b"", None
+
+        def __call__(self, addr, timeout):
+            if self.fail:
+                raise OSError("connection refused")
+            self.addr = addr
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def settimeout(self, t):
+            pass
+
+        def sendall(self, data):
+            self.sent += data
+
+        def recv(self, n):
+            return self.reply
+
+    url = "http://user:secret@eu.proxy.2captcha.com:2334"
+    s407 = _Sock(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n")
+    ok &= check("a 407 to CONNECT is read as 407, from the proxy's own host and port",
+                pp.connect_status(url, "www.transfermarkt.com", connect=s407) == 407
+                and s407.addr == ("eu.proxy.2captcha.com", 2334)
+                and s407.sent.startswith(b"CONNECT www.transfermarkt.com:443 HTTP/1.1"))
+    ok &= check("the login goes in Proxy-Authorization, as Chromium sends it",
+                b"Proxy-Authorization: Basic dXNlcjpzZWNyZXQ=" in s407.sent)
+    bare = _Sock(b"HTTP/1.1 407 x\r\n\r\n")
+    pp.connect_status(url, "www.transfermarkt.com", send_credentials=False, connect=bare)
+    ok &= check("send_credentials=False (Selenium) sends no login",
+                b"Proxy-Authorization" not in bare.sent)
+    ok &= check("a 200 is 200",
+                pp.connect_status(url, "h", connect=_Sock(b"HTTP/1.0 200 Connection established\r\n")) == 200)
+    ok &= check("no answer, a non-HTTP reply, a socks5 or https proxy -> None (never stops a run)",
+                pp.connect_status(url, "h", connect=_Sock(fail=True)) is None
+                and pp.connect_status(url, "h", connect=_Sock(b"garbage")) is None
+                and pp.connect_status("socks5://h:1080", "h", connect=_Sock(b"HTTP/1.1 407 x")) is None
+                and pp.connect_status("https://u:p@h:443", "h", connect=_Sock(b"HTTP/1.1 407 x")) is None)
+
+    calls = []
+    saved = pp.connect_status
+    pp.connect_status = lambda u, h, send_credentials=True, **k: calls.append(u) or 407
+    try:
+        pool = pp.ProxyPool([url])
+        first = pool.refuses_credentials("https://www.transfermarkt.com/a")
+        again = pool.refuses_credentials("https://www.transfermarkt.com/b")
+        ok &= check("refuses_credentials asks an exit once per run and remembers",
+                    first and again and len(calls) == 1)
+    finally:
+        pp.connect_status = saved
+
+    out = type("O", (), {"proxy_auth_refused": True, "load_failed": True})()
+    ok &= check("the stop reason is proxy_auth_refused, not page_load_timeout",
+                page_flow.failure_reason(out) == "proxy_auth_refused")
+    m = page_flow.proxy_auth_refused_message(pp.mask(url))
+    ms = page_flow.proxy_auth_refused_message(pp.mask(url), sends_credentials=False)
+    ok &= check("the messages name the 407 and the exit, never the password",
+                "407" in m and "eu.proxy.2captcha.com" in m and "secret" not in m + ms)
+    ok &= check("Selenium's says it cannot send a login, not that the login is wrong",
+                "Selenium cannot send one" in ms and "refused this login" not in ms)
+
+    for name, call in (("playwright_scraper.py", "pool.refuses_credentials(url)"),
+                       ("puppeteer_scraper.py", "pool.refuses_credentials(url)"),
+                       ("selenium_scraper.py", "pool.refuses_credentials(url, send_credentials=False)")):
+        src = open(os.path.join(REPO_ROOT, name), encoding="utf-8").read()
+        ok &= check("%s asks the exit before loading (%s)" % (name, call), call in src)
+    pps = open(os.path.join(REPO_ROOT, "puppeteer_scraper.py"), encoding="utf-8").read()
+    ok &= check("pyppeteer answers the proxy through Fetch, not page.authenticate "
+                "(Network.setRequestInterception is gone from current Chrome)",
+                "self.page.authenticate(" not in pps and "Fetch.continueWithAuth" in pps)
+    ok &= check("pyppeteer never hands a CDP send() Future straight to the bridge "
+                "(it raised 'A coroutine object is required')",
+                re.search(r"bridge\.run\(\s*\w+\.send\(", pps) is None)
+
+    try:
+        import playwright_scraper as ps
+    except ImportError as e:
+        skips.append("playwright_scraper proxy 407 fetch (%s)" % e)
+        return ok
+
+    class _Page:
+        def goto(self, *a, **k):
+            raise AssertionError("the browser was asked for the page")
+
+    session = type("S", (), {"remote": False, "page": _Page()})()
+    args = type("A", (), {"mode": "player", "retries": 3, "retry_delay": 0,
+                          "proxy_block_retries": 2})()
+    pool = pp.ProxyPool([url])
+    pool._auth_refused[(url, True)] = True
+    try:
+        o = ps._fetch_one_page(session, args, pool, 1, "https://www.transfermarkt.com/x/profil/spieler/1")
+        ok &= check("playwright: a refused login fails the page with no request to the site",
+                    o.proxy_auth_refused and o.load_failed
+                    and page_flow.failure_reason(o) == "proxy_auth_refused")
+    except AssertionError as e:
+        ok &= check("playwright: a refused login fails the page with no request to the site (%s)" % e, False)
+    return ok
+
+
+def test_aws_waf_solver_path_over_cdp(skips):
+    group("AWS WAF over the Scraping Browser: auto-solve, then the solver on the same exit")
+    ok = True
+    import captcha_solver as cs
+    url = "https://www.transfermarkt.com/spieler-statistik/wertvollstespieler/marktwertetop"
+    ch = cs.detect_aws_waf(FIX_AWS_WAF_CHALLENGE, url)
+    ok &= check("the voucher is exchanged beside the page's own challenge.js",
+                cs.aws_waf_voucher_url(ch)
+                == "https://6cb07a88f2ca.54698f12.us-east-1.token.awswaf.com/6cb/voucher")
+
+    sent = {}
+
+    class _Resp:
+        def __init__(self, ok, body):
+            self.ok, self._body, self.status_code = ok, body, 200 if ok else 400
+
+        def json(self):
+            return self._body
+
+    real_post = cs.requests.post
+    try:
+        def fake_post(u, data=None, headers=None, proxies=None, timeout=None, **kw):
+            sent.update(url=u, data=data, proxies=proxies)
+            return _Resp(True, {"token": "EXCHANGED"})
+        cs.requests.post = fake_post
+        got = cs.exchange_aws_waf_voucher(ch, "VOUCHER", "EXISTING", "http://u:p@h:1")
+        ok &= check("the raw voucher is NOT the token: it is exchanged for one "
+                    "(the raw voucher as cookie was refused, 2026-10-21)",
+                    got == "EXCHANGED" and sent["url"].endswith("/voucher")
+                    and json.loads(sent["data"]) == {"captcha_voucher": "VOUCHER",
+                                                     "existing_token": "EXISTING"})
+        ok &= check("...through the run's own exit", sent["proxies"] == {
+            "http": "http://u:p@h:1", "https": "http://u:p@h:1"})
+        cs.requests.post = lambda *a, **kw: _Resp(False, {"code": "x"})
+        ok &= check("...and a failed exchange returns None (the caller falls back)",
+                    cs.exchange_aws_waf_voucher(ch, "V", "E") is None)
+    finally:
+        cs.requests.post = real_post
+
+    try:
+        import playwright_scraper as ps
+    except ImportError as e:
+        skips.append("playwright_scraper AWS WAF over CDP (%s)" % e)
+        return ok
+
+    class _Ctx:
+        def add_cookies(self, cookies):
+            pass
+
+    class _Page:
+        def __init__(self):
+            self.url, self.context, self.reloads = url, _Ctx(), 0
+
+        def content(self):
+            return FIX_AWS_WAF_CHALLENGE
+
+        def query_selector_all(self, sel):
+            return []
+
+        def evaluate(self, js, *a):
+            return None
+
+        def reload(self, **kw):
+            self.reloads += 1
+
+        def wait_for_timeout(self, ms):
+            pass
+
+    calls = []
+    saved = {n: getattr(ps, n) for n in ("solve_recaptcha", "wait_for_autosolve")}
+    saved_wfc = ps.page_flow.wait_for_count
+    ps.solve_recaptcha = lambda challenge, key, **kw: calls.append(kw.get("proxy")) or "TOKEN"
+    ps.page_flow.wait_for_count = lambda *a, **kw: 0
+
+    def args(cdp):
+        return type("A", (), {"cdp_endpoint": cdp, "twocaptcha_key": "k",
+                              "solve_captcha": "when-blocked", "captcha_api": "v2",
+                              "min_score": 0.7, "mode": "market-values"})()
+    try:
+        ps.wait_for_autosolve = lambda page, sel: False
+        calls.clear()
+        res = ps.handle_captcha_if_present(_Page(), args("ws" + "://h:9222"), "table.items",
+                                           proxy=None, budget=page_flow.SolveBudget())
+        ok &= check("over --cdp-endpoint with no proxy for the solver, an AWS WAF "
+                    "captcha is NOT bought (proxyless came back existing_token)",
+                    res is False and calls == [])
+        calls.clear()
+        ps.handle_captcha_if_present(_Page(), args("ws" + "://h:9222"), "table.items",
+                                     proxy="http://u:p@h:1", budget=page_flow.SolveBudget())
+        ok &= check("...with the profile's proxy it is bought, solved on that exit",
+                    calls == ["http://u:p@h:1"])
+        # The auto-solve reports success but the reload still serves the
+        # captcha (twice, live, 2026-10-21): the solver must get its turn.
+        ps.wait_for_autosolve = lambda page, sel: True
+        calls.clear()
+        page = _Page()
+        ps.handle_captcha_if_present(page, args("ws" + "://h:9222"), "table.items",
+                                     proxy="http://u:p@h:1", budget=page_flow.SolveBudget())
+        ok &= check("a reported auto-solve that leaves the captcha up falls "
+                    "through to the solver API (was: gave up, exit 3)",
+                    page.reloads >= 1 and calls == ["http://u:p@h:1"])
+    finally:
+        for n, v in saved.items():
+            setattr(ps, n, v)
+        ps.page_flow.wait_for_count = saved_wfc
+    src = open(os.path.join(REPO_ROOT, "playwright_scraper.py"), encoding="utf-8").read()
+    ok &= check("over --cdp-endpoint a given proxy is kept for the solver, "
+                "not thrown away", "args.solver_exit = pool.current" in src
+                and 'getattr(args, "solver_exit", None)' in src)
+    return ok
+
+
+def test_concurrency_refused_over_cdp(skips):
+    group("--concurrency over a Scraping Browser endpoint is refused (exit 2)")
+    ok = True
+    try:
+        import playwright_scraper as ps
+    except ImportError as e:
+        skips.append("playwright_scraper --concurrency/CDP refusal (%s)" % e)
+        return ok
+    import contextlib
+    import io
+    names = set(env_config.ENV_KEYS) | {"TWOCAPTCHA_KEY"}
+    saved_env = {k: os.environ.get(k) for k in names}
+    saved_argv = sys.argv
+
+    def run(argv, endpoint):
+        for k in names:
+            os.environ.pop(k, None)
+        if endpoint:
+            os.environ["TRANSFERMARKT_CDP_ENDPOINT"] = endpoint
+        sys.argv = ["playwright_scraper.py"] + argv
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                ps.parse_args()
+            return 0, err.getvalue()
+        except SystemExit as e:
+            return e.code, err.getvalue()
+
+    try:
+        # README: "refused outright with --cdp-endpoint"; it was a warning and
+        # a single-worker run, exit 0 (measured 2026-10-21).
+        endpoint = "ws" + "://h" + ":9222"
+        rc, err = run(["--mode", "transfers", "--concurrency", "3"], endpoint)
+        ok &= check("--concurrency 3 with the endpoint from the environment "
+                    "-> exit 2 before any browser starts (got %s)" % rc,
+                    rc == 2 and "one live connection" in err)
+        rc, _ = run(["--mode", "transfers", "--concurrency", "3"], None)
+        ok &= check("...while --concurrency 3 without an endpoint still parses",
+                    rc == 0)
+        rc, _ = run(["--mode", "transfers"], endpoint)
+        ok &= check("...and the endpoint without --concurrency still parses",
+                    rc == 0)
+    finally:
+        sys.argv = saved_argv
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    return ok
+
+
 def main() -> int:
     ok = True
     # Checks that could not run because an optional engine library is absent.
@@ -5336,6 +5978,11 @@ def main() -> int:
     ok &= test_listing_end_and_repeated_pages(skips)
     ok &= test_target_5xx_is_a_server_error(skips)
     ok &= test_min_value_flag(skips)
+    ok &= test_concurrency_refused_over_cdp(skips)
+    ok &= test_aws_waf_solver_path_over_cdp(skips)
+    ok &= test_proxy_auth_refused(skips)
+    ok &= test_cdp_connect_hint()
+    ok &= test_diff_refusal_advice()
 
     print()
     if _failures:

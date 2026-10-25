@@ -12,7 +12,9 @@ pattern; this is that pattern.
 
 Kept engine-agnostic and side-effect free (no browser, no network) so the
 rotation rules are covered by the offline suite rather than only by a live
-run.
+run. The ONE exception is `connect_status`, a single CONNECT to the proxy
+itself, and its connection is injectable so the offline suite needs no
+network for it either.
 
 **Rotating the IP alone is not enough, and this is the part that is easy to
 get wrong.** Carrying the same browser session across two exits is itself a
@@ -25,9 +27,11 @@ down and relaunches rather than swapping the proxy under a live session.
 
 from __future__ import annotations
 
+import base64
 import logging
 import random
 import re
+import socket
 import string
 from typing import List, Optional
 from urllib.parse import urlparse, urlunparse
@@ -155,7 +159,7 @@ def mask(url: Optional[str]) -> str:
         tail = ""
         try:
             session = _SESSION_RE.search(parsed.username or "")
-            if session and host.endswith(_GATEWAY_SUFFIX):
+            if session and host.endswith(_GATEWAY_SUFFIXES):
                 tail = f" ({session.group(0).lstrip('-')})"
         except Exception:  # noqa: BLE001 -- never let the label break the mask
             tail = ""
@@ -193,8 +197,9 @@ def split_credentials(url: Optional[str]):
     `--proxy-server=` switch has nowhere to put a password AND lands in the
     browser process's argv, where anything that can run `ps` reads it — so
     the address goes on the command line and the credentials go through the
-    driver's own channel (pyppeteer's `page.authenticate`). Selenium has no
-    such channel at all, which is why it strips these and warns.
+    driver's own channel (pyppeteer answers the proxy's challenge over the
+    CDP Fetch domain). Selenium has no such channel at all, which is why it
+    strips these and warns.
     """
     if not url:
         return None, None
@@ -204,6 +209,58 @@ def split_credentials(url: Optional[str]):
     if parsed.username or parsed.password:
         return scrubbed, (parsed.username or "", parsed.password or "")
     return scrubbed, None
+
+
+# ---------------------------------------------------------------------------
+# Does the proxy take these credentials?
+# ---------------------------------------------------------------------------
+# A browser does not SAY when a proxy refuses its login. Measured 2026-10-25
+# with a bogus login on the real gateway (eu.proxy.2captcha.com:2334), which
+# answers CONNECT with "407 Proxy Authentication Required":
+#   playwright  waited out Page.goto, 60 s per attempt -> page_load_timeout,
+#               exit 5, three minutes at the default --retries 3;
+#   selenium    (credentials stripped by design) read Chrome's error page as
+#               a page with no player on it -> exit 4, a false answer about
+#               the site.
+# One CONNECT to the proxy answers the question in well under a second.
+PROXY_AUTH_REFUSED = "proxy_auth_refused"
+
+
+def connect_status(url: Optional[str], host: str, port: int = 443,
+                   timeout: float = 10.0, send_credentials: bool = True,
+                   connect=None) -> Optional[int]:
+    """The HTTP status an http:// proxy answers to `CONNECT host:port`, or
+    None when it cannot be known (not an http:// proxy, no answer, a reply
+    that is not HTTP). None never stops a run: only a definite answer does.
+
+    `send_credentials=False` asks what an engine that cannot authenticate
+    (Selenium) will get. The credentials go only into the Proxy-Authorization
+    header of this one request, the same Basic header Chromium sends; nothing
+    here logs or raises with them. `connect` replaces `socket.create_connection`
+    for the offline suite."""
+    try:
+        parsed = urlparse(url or "")
+        if parsed.scheme != "http" or not parsed.hostname:
+            return None
+        proxy_port = parsed.port or 80
+    except ValueError:
+        return None
+    request = f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n"
+    if send_credentials and (parsed.username or parsed.password):
+        token = base64.b64encode(
+            f"{parsed.username or ''}:{parsed.password or ''}".encode()).decode()
+        request += f"Proxy-Authorization: Basic {token}\r\n"
+    request += "\r\n"
+    try:
+        with (connect or socket.create_connection)((parsed.hostname, proxy_port),
+                                                   timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(request.encode())
+            head = sock.recv(256)
+    except (OSError, ValueError):
+        return None
+    m = re.match(rb"HTTP/1\.[01] (\d{3})", head or b"")
+    return int(m.group(1)) if m else None
 
 
 class ProxyPool:
@@ -245,6 +302,8 @@ class ProxyPool:
         self._index = 0
         # Counted so a run can report how many exits it actually burned.
         self.rotations = 0
+        # (exit, send_credentials) -> refused?  One CONNECT per exit per run.
+        self._auth_refused = {}
 
     def __len__(self) -> int:
         return len(self._proxies)
@@ -286,6 +345,21 @@ class ProxyPool:
     def rotates_per_page(self) -> bool:
         return self.rotate == "per-page"
 
+    def refuses_credentials(self, target_url: str, send_credentials: bool = True) -> bool:
+        """Did the CURRENT exit answer a CONNECT to `target_url`'s host with
+        407? Asked once per exit (and per credentials-or-not) and remembered,
+        so a 50-page run on one exit costs one CONNECT."""
+        key = (self.current, send_credentials)
+        if key not in self._auth_refused:
+            try:
+                host = urlparse(target_url).hostname or ""
+            except ValueError:
+                host = ""
+            status = connect_status(self.current, host, send_credentials=send_credentials) \
+                if host else None
+            self._auth_refused[key] = status == 407
+        return self._auth_refused[key]
+
 
 # ---------------------------------------------------------------------------
 # Generating a pool from ONE credential (2Captcha's gateway convention)
@@ -303,7 +377,10 @@ class ProxyPool:
 # twenty names for one IP: a pool that looks like a pool, logs like a pool,
 # and quietly concentrates every request on one exit. That is worse than a
 # file, which is why the check comes first and why the number is recorded.
-_GATEWAY_SUFFIX = ".proxy.2captcha.com"
+# Both brand domains front the same gateway: 2026-10-21, four sessions on
+# eu.proxy.rucaptcha.com gave four distinct exit addresses, as on
+# .proxy.2captcha.com. Refusing the first sent its users to a hand-made file.
+_GATEWAY_SUFFIXES = (".proxy.2captcha.com", ".proxy.rucaptcha.com")
 _SESSION_RE = re.compile(r"-session-[A-Za-z0-9]+")
 _SESSTIME_RE = re.compile(r"-sessTime-\d+")
 # Nine characters, matching the ids the vendor's own exported list uses.
@@ -319,7 +396,7 @@ def is_2captcha_gateway(url: Optional[str]) -> bool:
         host = (urlparse(url).hostname or "").lower()
     except ValueError:
         return False
-    return host.endswith(_GATEWAY_SUFFIX)
+    return host.endswith(_GATEWAY_SUFFIXES)
 
 
 def _session_id(rng: random.Random) -> str:
@@ -363,7 +440,8 @@ def mint_sessions(url: str, count: int, rng: Optional[random.Random] = None) -> 
     if not is_2captcha_gateway(url):
         raise ProxyError(
             "--proxy-sessions only applies to a 2Captcha proxy gateway "
-            f"(a host under {_GATEWAY_SUFFIX}); the URL given is not one. "
+            f"(a host under {' or '.join(_GATEWAY_SUFFIXES)}); the URL given "
+            "is not one. "
             "Use --proxy-file for proxies from anywhere else.")
     rng = rng or random.Random()
     seen, out = set(), []

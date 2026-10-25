@@ -632,9 +632,12 @@ def _v2_task_for(challenge: CaptchaChallenge, min_score: float,
     was actually challenged.
 
     So the type is chosen by whether this run has an exit to hand, not by
-    preference. Over the Scraping Browser API there is no local proxy URL and
-    the page and the solve already share the remote exit, so the proxyless
-    type stays correct there.
+    preference. Over the Scraping Browser API the solve does NOT share the
+    browser's exit — that was assumed here, and is wrong: on 2026-10-21 a
+    live AWS WAF captcha served to a profile's exit came back from the
+    proxyless task as `existing_token`, clearing nothing. The engine passes
+    the profile's own proxy when it is given one, and otherwise declines to
+    pay (playwright_scraper.handle_captcha_if_present).
     """
     if challenge.is_aws_waf:
         task = {
@@ -685,6 +688,47 @@ def _v2_task_for(challenge: CaptchaChallenge, min_score: float,
     if challenge.is_invisible_v2:
         task["isInvisible"] = True
     return task
+
+
+def aws_waf_voucher_url(challenge: CaptchaChallenge) -> Optional[str]:
+    """Where a solved AWS WAF captcha's voucher is exchanged: `/voucher`
+    beside the page's own challenge.js, on its `token.awswaf.com` host."""
+    script = challenge.challenge_script or ""
+    if "/" not in script or "awswaf.com" not in script:
+        return None
+    return script.rsplit("/", 1)[0] + "/voucher"
+
+
+def exchange_aws_waf_voucher(challenge: CaptchaChallenge, voucher: str,
+                             existing: Optional[str],
+                             proxy: Optional[str] = None) -> Optional[str]:
+    """Turn 2captcha's `captcha_voucher` into the `aws-waf-token` the site
+    reads, or None.
+
+    The voucher is NOT the token. Measured 2026-10-21 on a live captcha:
+    the raw voucher set as the `aws-waf-token` cookie was refused (HTTP 405,
+    the captcha again), while POSTing `{"captcha_voucher", "existing_token"}`
+    to `/voucher` beside the page's challenge.js answered 200 with
+    `{"token": ...}` — the same exchange the widget makes. 2captcha's docs
+    show the two fields and do not say what to do with them. Sent through
+    the run's own exit, because the solve and the page are tied to it."""
+    url = aws_waf_voucher_url(challenge)
+    if not url:
+        return None
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    try:
+        r = requests.post(url, data=json.dumps({"captcha_voucher": voucher,
+                                                "existing_token": existing}),
+                          headers={"Content-Type": "text/plain;charset=UTF-8"},
+                          proxies=proxies, timeout=30)
+        token = r.json().get("token") if r.ok else None
+    except (requests.RequestException, ValueError) as e:
+        logger.warning("AWS WAF voucher exchange failed: %s", _redact(str(e)))
+        return None
+    if not token:
+        logger.warning("AWS WAF voucher exchange answered HTTP %s without a "
+                       "token — falling back to the raw voucher.", r.status_code)
+    return token
 
 
 def _solve_with_2captcha_v2(api_key: str, challenge: CaptchaChallenge,
@@ -738,6 +782,12 @@ def _solve_with_2captcha_v2(api_key: str, challenge: CaptchaChallenge,
             #                    the two exits worth seeing in the log.
             voucher = solution.get("captcha_voucher")
             existing = solution.get("existing_token")
+            if challenge.is_aws_waf and voucher:
+                exchanged = exchange_aws_waf_voucher(challenge, voucher, existing, proxy)
+                if exchanged:
+                    logger.info("2captcha solved %s in ~%ds; voucher exchanged "
+                                "for an aws-waf-token.", challenge.kind, waited)
+                    return exchanged
             token = (solution.get("gRecaptchaResponse") or solution.get("token")
                      or voucher or existing)
             if not token:

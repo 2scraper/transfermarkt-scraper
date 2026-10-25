@@ -330,10 +330,16 @@ def league_id_from_url(url: Optional[str]) -> Optional[str]:
 #
 #   locale  symbol      decimal   thousand suffix   million suffix
 #   en      prefix "€"  period    k (measured page1 has none < 1m; documented)
-#   de      suffix " €" comma     Tsd. (documented, not measured)   Mio.
-#   ru      suffix " €" comma     тыс. (documented, not measured)   млн
-#   ko      suffix " €" period    th. (documented, not measured)    mil.
-#   ja      suffix " €" period    k (documented, not measured)      m
+#   de      suffix " €" comma     Tsd.                              Mio.
+#   ru      suffix " €" comma     тыс                               млн
+#   ko      suffix " €" period    k                                 mil.
+#   ja      suffix " €" period    千                                m
+#
+# The thousand suffixes were measured 2026-10-25 on Bayern's squad page, one
+# EUR 500k player in every locale: "500 Tsd. €", "500 тыс €", "500 k €",
+# "500 千 €". Until then ko and ja had been guessed as "th." and "k", so every
+# value under 1m read as None on those two hosts. The guesses ("th.", ja
+# "k", ru "тыс.") stay accepted on the same "costs nothing" basis as billion.
 #
 # billion (`bn`/`Mrd.`/`млрд`/`bil.`/`bn`) is documented-but-never-observed
 # in EVERY locale including English (this repo's pre-existing precedent —
@@ -349,9 +355,10 @@ _MONEY_FORMATS = {
            "suffixes": {"млрд": 1_000_000_000, "млн": 1_000_000, "тыс.": 1_000,
                         "тыс": 1_000}},
     "ko": {"symbol_prefix": False, "decimal": ".",
-           "suffixes": {"bil.": 1_000_000_000, "mil.": 1_000_000, "th.": 1_000}},
+           "suffixes": {"bil.": 1_000_000_000, "mil.": 1_000_000, "th.": 1_000,
+                        "k": 1_000}},
     "ja": {"symbol_prefix": False, "decimal": ".",
-           "suffixes": {"bn": 1_000_000_000, "m": 1_000_000, "k": 1_000}},
+           "suffixes": {"bn": 1_000_000_000, "m": 1_000_000, "千": 1_000, "k": 1_000}},
 }
 
 # One regex per locale: suffixes sorted longest-first so e.g. German "Mrd."
@@ -454,7 +461,8 @@ def parse_market_value(
 # below are their union. Re-derive by diffing the captures at the identical
 # DOM position; do not extend these by translating from memory.
 #
-# Coverage is intentionally uneven per locale — German has the most (10
+# (Historical — the complete lists now come from locale_names.py, below.)
+# Coverage was intentionally uneven per locale — German had the most (10
 # positions, from a full 43-player squad page) because that capture was
 # richer than the market-values top-25 (7-8 positions, attacker-heavy) run
 # for de/ru/ko/ja. An entry not in a locale's table is passed through
@@ -583,16 +591,188 @@ _NATIONALITY_EN = {
 }
 
 
+# Supplement, measured 2026-10-21: 8 ranking pages (200 players) on each of
+# the five hosts the same afternoon, rows matched by sku and flags by list
+# position -- the method described above, on a sample 8x larger than the
+# top-25 the tables were first built from. Every pair agreed on every
+# occurrence and none contradicted an entry above. Identity pairs (a name
+# spelled the same in both, e.g. "Senegal") are listed because a name
+# missing from a table is logged as untranslated. Some of the site's own
+# translations are odd and are kept AS THE SITE PRINTS THEM -- Korean
+# "이동" for Togo and "왜냐하면" for Cuba, Japanese "Grenadaj" and "Turkey" --
+# because a table that "corrected" them would no longer match the page.
+_POSITION_EN_SUPPLEMENT = {
+    'de': {'Linkes Mittelfeld': 'Left Midfield'},
+    'ru': {'Вратарь': 'Goalkeeper',
+         'Левый защитник': 'Left-Back',
+         'Левый полузащитник': 'Left Midfield',
+         'Правый защитник': 'Right-Back'},
+    'ko': {'골키퍼': 'Goalkeeper',
+         '우측 풀백': 'Right-Back',
+         '좌측 측면 미드필더': 'Left Midfield',
+         '좌측 풀백': 'Left-Back'},
+    'ja': {'ゴールキーパー': 'Goalkeeper',
+         '右サイドバック': 'Right-Back',
+         '左サイドバック': 'Left-Back',
+         '左ミッドフィールダー': 'Left Midfield'},
+}
+_NATIONALITY_EN_SUPPLEMENT = {
+    'de': {'Angola': 'Angola',
+         'Benin': 'Benin',
+         'Bosnien-Herzegowina': 'Bosnia-Herzegovina',
+         'Bulgarien': 'Bulgaria',
+         'Curacao': 'Curacao',
+         'Dänemark': 'Denmark',
+         'Eritrea': 'Eritrea',
+         'Finnland': 'Finland',
+         'Grenada': 'Grenada',
+         'Griechenland': 'Greece',
+         'Guadeloupe': 'Guadeloupe',
+         'Guernsey': 'Guernsey',
+         'Guinea-Bissau': 'Guinea-Bissau',
+         'Kolumbien': 'Colombia',
+         'Kongo': 'Congo',
+         'Kuba': 'Cuba',
+         'Liberia': 'Liberia',
+         'Mali': 'Mali',
+         'Marokko': 'Morocco',
+         'Martinique': 'Martinique',
+         'Schweden': 'Sweden',
+         'Senegal': 'Senegal',
+         'Serbien': 'Serbia',
+         'Slowenien': 'Slovenia',
+         'Suriname': 'Suriname',
+         'Togo': 'Togo',
+         'Tunesien': 'Tunisia',
+         'Türkei': 'Türkiye',
+         'Uruguay': 'Uruguay',
+         'Vereinigte Staaten': 'United States',
+         'Ägypten': 'Egypt'},
+    'ru': {'Алжир': 'Algeria',
+         'Ангола': 'Angola',
+         'Барбадос': 'Barbados',
+         'Бельгия': 'Belgium',
+         'Бенин': 'Benin',
+         'Болгария': 'Bulgaria',
+         'Босния и Герцеговина': 'Bosnia-Herzegovina',
+         'Гамбия': 'The Gambia',
+         'Гана': 'Ghana',
+         'Гваделупа': 'Guadeloupe',
+         'Гвинея-Бисау': 'Guinea-Bissau',
+         'Гернси': 'Guernsey',
+         'Гренада': 'Grenada',
+         'Греция': 'Greece',
+         'ДР Конго': 'DR Congo',
+         'Дания': 'Denmark',
+         'Египет': 'Egypt',
+         'Канада': 'Canada',
+         'Колумбия': 'Colombia',
+         'Конго': 'Congo',
+         'Куба': 'Cuba',
+         'Кюрасао': 'Curacao',
+         'Либерия': 'Liberia',
+         'Мали': 'Mali',
+         'Марокко': 'Morocco',
+         'Мартиника': 'Martinique',
+         'Нидерланды': 'Netherlands',
+         'Сенегал': 'Senegal',
+         'Сербия': 'Serbia',
+         'Словения': 'Slovenia',
+         'Соединенные Штаты Америки': 'United States',
+         'Суринам': 'Suriname',
+         'Того': 'Togo',
+         'Тунис': 'Tunisia',
+         'Турция': 'Türkiye',
+         'Узбекистан': 'Uzbekistan',
+         'Уругвай': 'Uruguay',
+         'Финляндия': 'Finland',
+         'Хорватия': 'Croatia',
+         'Швейцария': 'Switzerland',
+         'Швеция': 'Sweden',
+         'Эритрея': 'Eritrea'},
+    'ko': {'~였어야 했다': 'Mali',
+         '가나': 'Ghana',
+         '감비아': 'The Gambia',
+         '건지섬': 'Guernsey',
+         '과들루프': 'Guadeloupe',
+         '그레나다': 'Grenada',
+         '그리스': 'Greece',
+         '기니비사우': 'Guinea-Bissau',
+         '네덜란드': 'Netherlands',
+         '덴마크': 'Denmark',
+         '라이베리아': 'Liberia',
+         '마르티니크': 'Martinique',
+         '모로코': 'Morocco',
+         '미국': 'United States',
+         '바베이도스': 'Barbados',
+         '베냉': 'Benin',
+         '벨기에': 'Belgium',
+         '보스니아 헤르체고비나': 'Bosnia-Herzegovina',
+         '불가리아': 'Bulgaria',
+         '세네갈': 'Senegal',
+         '세르비아': 'Serbia',
+         '수리남': 'Suriname',
+         '스웨덴': 'Sweden',
+         '스위스': 'Switzerland',
+         '슬로베니아': 'Slovenia',
+         '알제리': 'Algeria',
+         '앙골라': 'Angola',
+         '에리트레아': 'Eritrea',
+         '왜냐하면': 'Cuba',
+         '우루과이': 'Uruguay',
+         '우즈베키스탄': 'Uzbekistan',
+         '이동': 'Togo',
+         '이집트': 'Egypt',
+         '캐나다': 'Canada',
+         '콜롬비아': 'Colombia',
+         '콩고': 'Congo',
+         '콩고 민주 공화국': 'DR Congo',
+         '큐라소': 'Curacao',
+         '크로아티아': 'Croatia',
+         '튀니지': 'Tunisia',
+         '튀르키예': 'Türkiye',
+         '핀란드': 'Finland'},
+    'ja': {'Grenadaj': 'Grenada', 'Turkey': 'Türkiye'},
+}
+for _loc, _extra in _POSITION_EN_SUPPLEMENT.items():
+    _POSITION_EN.setdefault(_loc, {}).update(_extra)
+for _loc, _extra in _NATIONALITY_EN_SUPPLEMENT.items():
+    _NATIONALITY_EN.setdefault(_loc, {}).update(_extra)
+
+# Everything above is MEASURED from players' own rows. Each new squad still
+# brought names it lacked (2026-10-21: Österreich, Japan, Ukraine, Polen,
+# "Hängende Spitze" on three club pages), so the complete lists the site
+# itself publishes — generated into locale_names.py from the ranking page's
+# filter <select>s by tools/build_locale_names.py — fill in underneath. A
+# measured pair wins on a clash; the generator refuses to write one that
+# disagrees, and on 2026-10-21 none did.
+_NATIONALITY_EN_MEASURED = {k: dict(v) for k, v in _NATIONALITY_EN.items()}
+_POSITION_EN_MEASURED = {k: dict(v) for k, v in _POSITION_EN.items()}
+try:
+    import locale_names as _locale_names
+except ImportError:  # only while generating it for the first time
+    _locale_names = None
+if _locale_names is not None:
+    for _loc, _all in _locale_names.NATIONALITY_EN.items():
+        _NATIONALITY_EN[_loc] = {**_all, **_NATIONALITY_EN_MEASURED.get(_loc, {})}
+    for _loc, _all in _locale_names.POSITION_EN.items():
+        _POSITION_EN[_loc] = {**_all, **_POSITION_EN_MEASURED.get(_loc, {})}
+
+
 def translate_nationality(text: Optional[str], locale: str = DEFAULT_LOCALE) -> Optional[str]:
     """`text` normalised to its English nationality name, or `text`
     unchanged (with a logged warning) when `locale` has no entry for it.
     Japanese always passes through unchanged — see `_NATIONALITY_EN`'s
     docstring note: that locale's own flag text is already English."""
-    if not text or locale in (DEFAULT_LOCALE, "ja"):
+    if not text or locale == DEFAULT_LOCALE:
         return text
     table = _NATIONALITY_EN.get(locale)
     if not table:
         return text
+    if locale == "ja":
+        # English already, except where the site's Japanese flags differ
+        # from its English ones (the supplement above); nothing to warn about.
+        return table.get(text, text)
     translated = table.get(text)
     if translated is None:
         logger.warning("no %s->en nationality translation for %r -- passing "
@@ -894,6 +1074,24 @@ def next_page_link(html: Optional[str], base_url: str) -> Optional[str]:
         "link[rel='next'], a[rel='next']")
     href = el.get("href") if el else None
     return urljoin(base_url, href) if href else None
+
+
+def served_page_number(html: Optional[str]) -> Optional[int]:
+    """The page number the served page's own pager marks as current, or None
+    when it has no pager.
+
+    A number past the end of a listing is answered with the LAST page, and
+    its pager says so: `?page=401` of a four-page listing came back with
+    "Page 4" as the active item (capture of 2026-10-15). That is what lets a
+    run that lost page 4 to a timeout recognise page 5's answer as page 4's
+    rows (page_flow.fill_from_past_end)."""
+    if not html:
+        return None
+    a = BeautifulSoup(html, "html.parser").select_one(
+        "li.tm-pagination__list-item--active a[href]")
+    if a is None:
+        return None
+    return page_number_from_url(urljoin("https://www.transfermarkt.com/", a["href"]))
 
 
 def page_states_rows(html: Optional[str], mode: str) -> bool:

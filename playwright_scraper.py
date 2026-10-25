@@ -84,14 +84,14 @@ from captcha_solver import (detect_recaptcha_v3, detect_recaptcha_in_page,
 from product_parser import (parse_market_values, parse_club_squad,
                             parse_transfers, parse_player_detail,
                             detect_bot_challenge, page_states_rows, page_url,
-                            next_page_link,
+                            next_page_link, served_page_number,
                             site_host, is_supported_host, unsupported_reason,
                             HOSTS, player_url, club_squad_url,
                             MARKET_VALUES_URL, TRANSFERS_URL, transfers_url)
 from output_writer import dedupe_by_key, finish_run, RemoteAPIError, EXIT_REMOTE_API_ERROR
 import page_flow
 from proxy_pool import (from_args as proxy_pool_from_args, to_playwright, mask,
-                        ROTATE_MODES, ProxyError, ProxyPool)
+                        ROTATE_MODES, ProxyError, ProxyPool, PROXY_AUTH_REFUSED)
 import env_config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -130,8 +130,14 @@ class PageOutcome:
     # decides whether a repeated page is the listing's end or a page
     # lost (page_flow.PageSequence).
     next_url: Optional[str] = None
+    # The page number the served page's own pager marks current: a number
+    # past the end is answered with the last page (page_flow.fill_from_past_end).
+    served_page: Optional[int] = None
     # The target answered 5xx on every try (page_flow.STOP_TARGET_HTTP_5XX).
     server_error: bool = False
+    # The exit answered CONNECT with 407 — nothing was requested from the
+    # site (proxy_pool.connect_status).
+    proxy_auth_refused: bool = False
 
     @property
     def ok(self) -> bool:
@@ -251,21 +257,33 @@ class _BrowserSession:
 def _connect_remote(pw, args):
     logger.info("Connecting to existing browser over CDP: %s",
                 _mask_credentials(args.cdp_endpoint))
-    try:
-        browser = pw.chromium.connect_over_cdp(args.cdp_endpoint, timeout=30000)
-    except (PWError, PWTimeout) as e:
-        # A RemoteAPIError, not a re-raised PWError: this is the Scraping
-        # Browser API's OWN connection refusing us, not the target site, and
-        # it needs to be exit 5 rather than falling through to an uncaught
-        # crash (1) — see output_writer.RemoteAPIError.
-        raise RemoteAPIError(
-            f"could not connect to --cdp-endpoint "
-            f"{_mask_credentials(args.cdp_endpoint)}: "
-            f"{_mask_credentials(str(e))}\n"
-            f"A Scraping Browser profile allows ONE live connection at a "
-            f"time, so a 500 here usually means another run still holds this "
-            f"`pid`. Wait for it to finish, or use a different pid."
-        ) from None
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            browser = pw.chromium.connect_over_cdp(args.cdp_endpoint, timeout=30000)
+            break
+        except (PWError, PWTimeout) as e:
+            # Only an explicit, immediate refusal is retried (see
+            # page_flow.cdp_retry_delay); a connect TIMEOUT is not.
+            wait = (None if isinstance(e, PWTimeout)
+                    else page_flow.cdp_retry_delay(str(e), attempt))
+            if wait is not None:
+                logger.warning("CDP connect refused (%s) — retrying in %.0fs "
+                               "(retry %d).", page_flow.cdp_refusal(str(e)),
+                               wait, attempt)
+                time.sleep(wait)
+                continue
+            # A RemoteAPIError, not a re-raised PWError: this is the Scraping
+            # Browser API's OWN connection refusing us, not the target site,
+            # and it needs to be exit 5 rather than falling through to an
+            # uncaught crash (1) — see output_writer.RemoteAPIError.
+            raise RemoteAPIError(
+                f"could not connect to --cdp-endpoint "
+                f"{_mask_credentials(args.cdp_endpoint)}: "
+                f"{_mask_credentials(str(e))}\n"
+                f"{page_flow.cdp_connect_hint(str(e))}"
+            ) from None
     context = browser.contexts[0] if browser.contexts else browser.new_context()
     page = context.new_page()
     # Counters, not just log lines. Measured 2026-09-17 on a live AWS WAF
@@ -441,14 +459,28 @@ def handle_captcha_if_present(page, args, ready_selector: str,
             page_flow.content_timeout_ms(getattr(args, "mode", "market-values")))
         if seen:
             logger.info("Page painted %d match(es) after the auto-solve.", seen)
-        else:
-            logger.info("Nothing painted after the auto-solve; reloading once.")
-            try:
-                page.reload(wait_until="domcontentloaded", timeout=60000)
-            except (PWTimeout, PWError) as e:
-                logger.warning("Reload after auto-solve failed (%s) — "
-                               "continuing with whatever the page holds.", e)
-        return True
+            return True
+        logger.info("Nothing painted after the auto-solve; reloading once.")
+        try:
+            page.reload(wait_until="domcontentloaded", timeout=60000)
+        except (PWTimeout, PWError) as e:
+            logger.warning("Reload after auto-solve failed (%s) — "
+                           "continuing with whatever the page holds.", e)
+            return True
+        # A reported solve is not a cleared page. Measured 2026-10-21 on a
+        # live AWS WAF captcha: solveFinished after 6.5s and 23s, and the
+        # reload served the captcha again both times — the run then ended
+        # exit 3 without ever offering it to the solver API, the fallback the
+        # README puts behind the auto-solve. So look again, and fall through
+        # to that fallback when the widget is still there.
+        after = _content_when_settled(page)
+        again = detect_aws_waf(after, page.url) if (after and challenge.is_aws_waf) else None
+        if again is None or not again.has_captcha_widget:
+            return True
+        logger.warning("The auto-solve reported success, but the AWS WAF "
+                       "captcha is still served after a reload — offering "
+                       "it to the solver API.")
+        challenge = again
 
     # "Unsolvable" is a property of a PAGE -- it means the page
     # carries no widget. An AWS WAF CHALLENGE-action page is exactly that:
@@ -482,6 +514,18 @@ def handle_captcha_if_present(page, args, ready_selector: str,
     if not args.twocaptcha_key:
         logger.warning("No 2captcha API key — continuing with whatever the "
                        "page already holds.")
+        return False
+    if challenge.is_aws_waf and getattr(args, "cdp_endpoint", None) and not proxy:
+        # Measured 2026-10-21: over a profile's exit, the proxyless task
+        # came back `existing_token` — 2captcha's own address was not
+        # challenged, so it bought nothing. Do not pay for that again.
+        logger.warning("AWS WAF over --cdp-endpoint with no proxy for the "
+                       "solver: it would solve from its own address, not the "
+                       "profile's, and buy a token that clears nothing — not "
+                       "paying. Build the profile on a proxy you hold "
+                       "(browser_profile_client.py connection --proxy-line N) "
+                       "and pass the same one as TRANSFERMARKT_PROXY, or use "
+                       "another profile/exit.")
         return False
     # Checked before the purchase, against the PAGE's allowance: a retry from
     # a fresh browser or another exit does not earn a second paid solve.
@@ -559,7 +603,15 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         logger.info("Fetching page %d: %s", page_num, url)
         load_failed, exit_failed = False, None
         resp_status, resp_headers = None, None
-        for attempt in range(1, args.retries + 1):
+        # Asked before the browser is: a refused login makes Chromium wait
+        # out the whole load timeout, every attempt, without saying why.
+        refused = bool(pool) and not session.remote and pool.refuses_credentials(url)
+        outcome.proxy_auth_refused = refused
+        if refused:
+            exit_failed, load_failed = PROXY_AUTH_REFUSED, True
+            last_error = "407 Proxy Authentication Required"
+            logger.error(page_flow.proxy_auth_refused_message(mask(pool.current)))
+        for attempt in (() if refused else range(1, args.retries + 1)):
             try:
                 # The Response is KEPT, not discarded. Until v0.4.1 this
                 # return value was thrown away and `_classify` was called
@@ -617,7 +669,8 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
             break
 
         if handle_captcha_if_present(session.page, args, ready_selector,
-                                    proxy=pool.current if pool else None,
+                                    proxy=(pool.current if pool
+                                           else getattr(args, "solver_exit", None)),
                                     budget=budget):
             session.page.wait_for_timeout(1000)
             # The page now holds a DIFFERENT document: the WAF's script
@@ -646,9 +699,12 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
             session.relaunch()
 
     if load_failed:
-        logger.error("Gave up loading %s after %d attempt(s) of %d. Last "
-                     "error: %s", url, attempts_made or args.retries,
-                     args.retries, last_error or "not recorded")
+        if not outcome.proxy_auth_refused:
+            # A refused proxy login was named above, and no attempt was made:
+            # "after 3 attempt(s)" here would be false.
+            logger.error("Gave up loading %s after %d attempt(s) of %d. Last "
+                         "error: %s", url, attempts_made or args.retries,
+                         args.retries, last_error or "not recorded")
         outcome.load_failed = True
         return outcome
 
@@ -782,6 +838,7 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
     outcome.rows = rows
     outcome.final_url = session.page.url
     outcome.next_url = next_page_link(html, outcome.final_url)
+    outcome.served_page = served_page_number(html)
     return outcome
 
 
@@ -902,9 +959,20 @@ def scrape(args) -> int:
     stop_reason = "single_page_mode" if args.mode not in PAGINATED_MODES else "completed"
 
     pool = proxy_pool_from_args(args)
+    args.solver_exit = None
     if pool and args.cdp_endpoint:
-        logger.warning("Ignoring --proxy/--proxy-file: with --cdp-endpoint "
-                       "the remote browser has its own exit.")
+        # The remote browser keeps its own exit. But a captcha must be solved
+        # from the address it was served to, and the solver API does not run
+        # on the browser's exit: proxyless, it answered a live AWS WAF captcha
+        # served to a profile's exit with `existing_token` (2026-10-21),
+        # clearing nothing. So the proxy goes to the solver — correct when it
+        # IS the profile's exit (`browser_profile_client.py connection
+        # --proxy-line`).
+        args.solver_exit = pool.current
+        logger.warning("--cdp-endpoint: the remote browser has its own exit; "
+                       "--proxy/--proxy-file is used ONLY for the captcha "
+                       "solver, which must solve from that same exit — pass "
+                       "the proxy the profile was built with.")
         pool = None
 
     concurrency = max(1, args.concurrency)
@@ -914,11 +982,6 @@ def scrape(args) -> int:
                         "here is not independently addressable (market-values) "
                         "or there is only one page (club-squad/player).",
                         args.mode)
-            concurrency = 1
-        elif args.cdp_endpoint:
-            logger.warning("--concurrency is ignored with --cdp-endpoint: "
-                           "the Scraping Browser API allows one live "
-                           "connection per profile.")
             concurrency = 1
         elif not pool:
             logger.warning("--concurrency %d with no proxy pool: every "
@@ -967,6 +1030,7 @@ def scrape(args) -> int:
                         args, pool, specs, concurrency,
                         known_keys=[r.sku for r in first.rows])
                     outcomes.extend(rest)
+                    page_flow.fill_from_past_end(outcomes)
                     pages = page_flow.settle_repeats(outcomes)
 
                     failed = [o for o in rest
@@ -1198,6 +1262,17 @@ def parse_args():
         if args.mode != "transfers":
             p.error("--min-value applies to --mode transfers only")
         args.url = transfers_url(args.min_value, base_url=args.url)
+
+    # Refused, not quietly ignored, as the README says: one Scraping Browser
+    # profile holds ONE live connection, so N workers cannot share it.
+    # Checked after the environment, because the endpoint usually comes
+    # from TRANSFERMARKT_CDP_ENDPOINT in .env rather than the command line.
+    if args.concurrency > 1 and args.cdp_endpoint:
+        p.error("--concurrency %d cannot run over --cdp-endpoint (here "
+                "possibly TRANSFERMARKT_CDP_ENDPOINT from .env): a Scraping "
+                "Browser profile allows one live connection. For parallel "
+                "fetching use several profiles, one run each, or drop "
+                "--concurrency." % args.concurrency)
 
     if not is_supported_host(args.url):
         why = unsupported_reason(args.url)

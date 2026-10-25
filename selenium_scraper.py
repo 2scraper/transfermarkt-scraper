@@ -61,7 +61,7 @@ from product_parser import (parse_market_values, parse_club_squad,
 from output_writer import dedupe_by_key, finish_run, RemoteAPIError, EXIT_REMOTE_API_ERROR
 import page_flow
 from proxy_pool import (from_args as proxy_pool_from_args, mask, ROTATE_MODES,
-                        ProxyError, split_credentials)
+                        ProxyError, split_credentials, PROXY_AUTH_REFUSED)
 import env_config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -124,6 +124,9 @@ class PageOutcome:
     next_url: Optional[str] = None
     # The target answered 5xx on every try (page_flow.STOP_TARGET_HTTP_5XX).
     server_error: bool = False
+    # The exit answered CONNECT with 407 — nothing was requested from the
+    # site (proxy_pool.connect_status).
+    proxy_auth_refused: bool = False
 
     @property
     def ok(self) -> bool:
@@ -402,7 +405,18 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
     for block_attempt in tries:
         logger.info("Fetching page %d: %s", page_num, url)
         load_failed, exit_failed = False, None
-        for attempt in range(1, args.retries + 1):
+        # Asked WITHOUT credentials, because that is how this engine's
+        # Chrome goes out (they are stripped). A 407 here used to come back
+        # as Chrome's error page, parsed as a page with no rows: exit 4, a
+        # false answer about the site (2026-10-25).
+        refused = (bool(pool) and not session.remote
+                   and pool.refuses_credentials(url, send_credentials=False))
+        outcome.proxy_auth_refused = refused
+        if refused:
+            exit_failed, load_failed = PROXY_AUTH_REFUSED, True
+            logger.error(page_flow.proxy_auth_refused_message(
+                mask(pool.current), sends_credentials=False))
+        for attempt in (() if refused else range(1, args.retries + 1)):
             try:
                 session.driver.get(url)
                 load_failed = False
@@ -455,7 +469,9 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
             d = _driver(session)
 
     if load_failed:
-        logger.error("Gave up loading %s after %d attempt(s).", url, args.retries)
+        if not outcome.proxy_auth_refused:
+            # A refused proxy login was named above, and no attempt was made.
+            logger.error("Gave up loading %s after %d attempt(s).", url, args.retries)
         outcome.load_failed = True
         return outcome
 
