@@ -443,6 +443,8 @@ def failure_reason(outcome) -> str:
     """The stop reason a failed page outcome gives the run. One place, so the
     four engines and their concurrent paths cannot name the same failure
     differently."""
+    if getattr(outcome, "proxy_auth_refused", False):
+        return "proxy_auth_refused"
     if getattr(outcome, "load_failed", False):
         return "page_load_timeout"
     if getattr(outcome, "parse_failed", False):
@@ -777,6 +779,23 @@ def cdp_retry_delay(error_text: str, attempt: int) -> Optional[float]:
         return None
     retries, delay = CDP_REFUSAL_RETRIES[word]
     return delay * attempt if attempt <= retries else None
+
+
+def proxy_auth_refused_message(masked_exit: str, sends_credentials: bool = True) -> str:
+    """What to say when the exit answered CONNECT with 407 (see
+    proxy_pool.connect_status). Said before any page is requested: the
+    browser itself would only have waited out the load timeout."""
+    if not sends_credentials:
+        return ("Proxy %s answered 407 Proxy Authentication Required: it needs "
+                "a login, and Selenium cannot send one. Nothing was requested "
+                "from the site. Use playwright_scraper.py or "
+                "puppeteer_scraper.py for an authenticated proxy, or a proxy "
+                "that authorises this machine by IP." % masked_exit)
+    return ("Proxy %s answered 407 Proxy Authentication Required: it refused "
+            "this login or password. Nothing was requested from the site. "
+            "Check the credentials in --proxy / --proxy-file / "
+            "TRANSFERMARKT_PROXY — a 2Captcha proxy login belongs to the key "
+            "that bought it." % masked_exit)
 
 
 def cdp_connect_hint(error_text: str) -> str:

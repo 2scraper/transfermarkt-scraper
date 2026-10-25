@@ -21,6 +21,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A proxy that refused its login was never named.** Measured 2026-10-25
+  with a bogus login on the real gateway (it answers CONNECT with 407):
+  Playwright waited out the load timeout, 60 s per attempt, and reported
+  `page_load_timeout`; Selenium (credentials stripped by design) read Chrome's
+  error page as a page with no rows — exit 4, a false answer about the site.
+  Every engine now asks the exit with one CONNECT before its first page
+  (`proxy_pool.connect_status`, once per exit): a 407 stops the page at once
+  with `stop_reason: proxy_auth_refused`, exit 5, nothing requested from the
+  site, and a message that names the exit and — for Selenium — that it cannot
+  send a login. Measured after: 1–2 s on all three engines.
+- **pyppeteer could not use an authenticated proxy in current Chrome.** Its
+  `page.authenticate()` turns on `Network.setRequestInterception`, which
+  Chrome no longer has; with `--chromium-path` (required on Apple silicon)
+  every run with a proxy login — a working one included — died before the
+  first page (exit 1, a traceback). The proxy's challenge is now answered
+  over the CDP `Fetch` domain; a second challenge for one request (a wrong
+  password) is cancelled rather than looped. 50 rows through a working
+  login, 2026-10-25.
+- **pyppeteer never enabled the Scraping Browser's captcha auto-solve.**
+  `Captcha.setAutoSolve` was handed to the event-loop bridge as a Future,
+  which raised "A coroutine object is required" on every connect; the
+  `except` around it logged that as "not available on this --cdp-endpoint".
+  Now sent from a coroutine: "Captcha.setAutoSolve enabled", 25 rows,
+  2026-10-25.
 - **Values under EUR 1m read as `null` on `.co.kr` and `.jp`.** The thousand
   suffixes of those two locales had been guessed ("th.", "k"), never
   measured; the sites print "500 k €" and "500 千 €". Measured 2026-10-25 on

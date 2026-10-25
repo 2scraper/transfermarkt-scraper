@@ -5638,6 +5638,117 @@ def test_cdp_connect_hint():
     return ok
 
 
+def test_proxy_auth_refused(skips):
+    group("a proxy that refuses the login is named at once, not waited out")
+    ok = True
+    import proxy_pool as pp
+
+    class _Sock:
+        """Stands in for socket.create_connection: records what was sent."""
+        def __init__(self, reply=b"", fail=False):
+            self.reply, self.fail, self.sent, self.addr = reply, fail, b"", None
+
+        def __call__(self, addr, timeout):
+            if self.fail:
+                raise OSError("connection refused")
+            self.addr = addr
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def settimeout(self, t):
+            pass
+
+        def sendall(self, data):
+            self.sent += data
+
+        def recv(self, n):
+            return self.reply
+
+    url = "http://user:secret@eu.proxy.2captcha.com:2334"
+    s407 = _Sock(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n")
+    ok &= check("a 407 to CONNECT is read as 407, from the proxy's own host and port",
+                pp.connect_status(url, "www.transfermarkt.com", connect=s407) == 407
+                and s407.addr == ("eu.proxy.2captcha.com", 2334)
+                and s407.sent.startswith(b"CONNECT www.transfermarkt.com:443 HTTP/1.1"))
+    ok &= check("the login goes in Proxy-Authorization, as Chromium sends it",
+                b"Proxy-Authorization: Basic dXNlcjpzZWNyZXQ=" in s407.sent)
+    bare = _Sock(b"HTTP/1.1 407 x\r\n\r\n")
+    pp.connect_status(url, "www.transfermarkt.com", send_credentials=False, connect=bare)
+    ok &= check("send_credentials=False (Selenium) sends no login",
+                b"Proxy-Authorization" not in bare.sent)
+    ok &= check("a 200 is 200",
+                pp.connect_status(url, "h", connect=_Sock(b"HTTP/1.0 200 Connection established\r\n")) == 200)
+    ok &= check("no answer, a non-HTTP reply, a socks5 or https proxy -> None (never stops a run)",
+                pp.connect_status(url, "h", connect=_Sock(fail=True)) is None
+                and pp.connect_status(url, "h", connect=_Sock(b"garbage")) is None
+                and pp.connect_status("socks5://h:1080", "h", connect=_Sock(b"HTTP/1.1 407 x")) is None
+                and pp.connect_status("https://u:p@h:443", "h", connect=_Sock(b"HTTP/1.1 407 x")) is None)
+
+    calls = []
+    saved = pp.connect_status
+    pp.connect_status = lambda u, h, send_credentials=True, **k: calls.append(u) or 407
+    try:
+        pool = pp.ProxyPool([url])
+        first = pool.refuses_credentials("https://www.transfermarkt.com/a")
+        again = pool.refuses_credentials("https://www.transfermarkt.com/b")
+        ok &= check("refuses_credentials asks an exit once per run and remembers",
+                    first and again and len(calls) == 1)
+    finally:
+        pp.connect_status = saved
+
+    out = type("O", (), {"proxy_auth_refused": True, "load_failed": True})()
+    ok &= check("the stop reason is proxy_auth_refused, not page_load_timeout",
+                page_flow.failure_reason(out) == "proxy_auth_refused")
+    m = page_flow.proxy_auth_refused_message(pp.mask(url))
+    ms = page_flow.proxy_auth_refused_message(pp.mask(url), sends_credentials=False)
+    ok &= check("the messages name the 407 and the exit, never the password",
+                "407" in m and "eu.proxy.2captcha.com" in m and "secret" not in m + ms)
+    ok &= check("Selenium's says it cannot send a login, not that the login is wrong",
+                "Selenium cannot send one" in ms and "refused this login" not in ms)
+
+    for name, call in (("playwright_scraper.py", "pool.refuses_credentials(url)"),
+                       ("puppeteer_scraper.py", "pool.refuses_credentials(url)"),
+                       ("selenium_scraper.py", "pool.refuses_credentials(url, send_credentials=False)")):
+        src = open(os.path.join(REPO_ROOT, name), encoding="utf-8").read()
+        ok &= check("%s asks the exit before loading (%s)" % (name, call), call in src)
+    pps = open(os.path.join(REPO_ROOT, "puppeteer_scraper.py"), encoding="utf-8").read()
+    ok &= check("pyppeteer answers the proxy through Fetch, not page.authenticate "
+                "(Network.setRequestInterception is gone from current Chrome)",
+                "self.page.authenticate(" not in pps and "Fetch.continueWithAuth" in pps)
+    ok &= check("pyppeteer never hands a CDP send() Future straight to the bridge "
+                "(it raised 'A coroutine object is required')",
+                re.search(r"bridge\.run\(\s*\w+\.send\(", pps) is None)
+
+    try:
+        import playwright_scraper as ps
+    except ImportError as e:
+        skips.append("playwright_scraper proxy 407 fetch (%s)" % e)
+        return ok
+
+    class _Page:
+        def goto(self, *a, **k):
+            raise AssertionError("the browser was asked for the page")
+
+    session = type("S", (), {"remote": False, "page": _Page()})()
+    args = type("A", (), {"mode": "player", "retries": 3, "retry_delay": 0,
+                          "proxy_block_retries": 2})()
+    pool = pp.ProxyPool([url])
+    pool._auth_refused[(url, True)] = True
+    try:
+        o = ps._fetch_one_page(session, args, pool, 1, "https://www.transfermarkt.com/x/profil/spieler/1")
+        ok &= check("playwright: a refused login fails the page with no request to the site",
+                    o.proxy_auth_refused and o.load_failed
+                    and page_flow.failure_reason(o) == "proxy_auth_refused")
+    except AssertionError as e:
+        ok &= check("playwright: a refused login fails the page with no request to the site (%s)" % e, False)
+    return ok
+
+
 def test_aws_waf_solver_path_over_cdp(skips):
     group("AWS WAF over the Scraping Browser: auto-solve, then the solver on the same exit")
     ok = True
@@ -5869,6 +5980,7 @@ def main() -> int:
     ok &= test_min_value_flag(skips)
     ok &= test_concurrency_refused_over_cdp(skips)
     ok &= test_aws_waf_solver_path_over_cdp(skips)
+    ok &= test_proxy_auth_refused(skips)
     ok &= test_cdp_connect_hint()
     ok &= test_diff_refusal_advice()
 

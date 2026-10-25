@@ -168,6 +168,9 @@ class PageOutcome:
     next_url: Optional[str] = None
     # The target answered 5xx on every try (page_flow.STOP_TARGET_HTTP_5XX).
     server_error: bool = False
+    # The exit answered CONNECT with 407 — nothing was requested from the
+    # site (proxy_pool.connect_status).
+    proxy_auth_refused: bool = False
 
     @property
     def ok(self) -> bool:
@@ -238,9 +241,15 @@ class _Session:
                 return self
             try:
                 session = self.bridge.run(self.page.target.createCDPSession())
-                self.bridge.run(session.send(
-                    "Captcha.setAutoSolve",
-                    {"autoSolve": True, "options": [{"type": "*"}]}))
+                async def autosolve():
+                    # CDPSession.send returns a Future, and the bridge takes a
+                    # coroutine: passed straight in, this raised "A coroutine
+                    # object is required" on every connect, which the except
+                    # below logged as "not available" — auto-solve was never
+                    # on for this engine (found 2026-10-25 in a step-65 log).
+                    await session.send("Captcha.setAutoSolve",
+                                       {"autoSolve": True, "options": [{"type": "*"}]})
+                self.bridge.run(autosolve())
                 session.on("Captcha.detected", lambda *_: logger.info(
                     "[Scraping Browser] CAPTCHA detected on page."))
                 session.on("Captcha.solveFinished", lambda *_: logger.info(
@@ -279,11 +288,53 @@ class _Session:
         self.bridge.run(self.page.setUserAgent(_chrome_ua(version)))
         self.bridge.run(self.page.setViewport({"width": 1600, "height": 1000}))
         if credentials:
-            self.bridge.run(self.page.authenticate(
-                {"username": credentials[0], "password": credentials[1]}))
+            self._authenticate_proxy(*credentials)
         if self.args.fingerprint:
             self._apply_fingerprint()
         return self
+
+    def _authenticate_proxy(self, username: str, password: str):
+        """Answer the proxy's auth challenge through the CDP Fetch domain.
+
+        pyppeteer's own `page.authenticate()` turns on request interception
+        with `Network.setRequestInterception`, which current Chrome no longer
+        has: measured 2026-10-25 with --chromium-path at Google Chrome, every
+        run with an authenticated proxy — a working one included — died on
+        "'Network.setRequestInterception' wasn't found" before the first page.
+        `Fetch` is what replaced it, and pyppeteer's bundled Chromium has it
+        too. A second challenge for the same request means the login was
+        refused: cancelled, so a wrong password cannot loop."""
+        client = self.bridge.run(self.page.target.createCDPSession())
+        answered = set()
+
+        async def send(method, params):
+            try:
+                await client.send(method, params)
+            except Exception as e:  # noqa: BLE001 — a request gone with its
+                # page (navigation, close) has nothing left to continue.
+                logger.debug("Fetch %s not sent: %s", method, e)
+
+        def on_auth(event):
+            rid = event.get("requestId")
+            reply = "CancelAuth" if rid in answered else "ProvideCredentials"
+            answered.add(rid)
+            asyncio.ensure_future(send("Fetch.continueWithAuth", {
+                "requestId": rid,
+                "authChallengeResponse": {"response": reply, "username": username,
+                                          "password": password}}))
+
+        def on_paused(event):
+            asyncio.ensure_future(send("Fetch.continueRequest",
+                                       {"requestId": event.get("requestId")}))
+
+        async def enable():
+            # CDPSession.send returns a Future, and the bridge takes a coroutine.
+            await client.send("Fetch.enable", {"handleAuthRequests": True,
+                                               "patterns": [{"urlPattern": "*"}]})
+
+        client.on("Fetch.authRequired", on_auth)
+        client.on("Fetch.requestPaused", on_paused)
+        self.bridge.run(enable())
 
     def _apply_fingerprint(self):
         from fingerprint_client import get_fingerprint, playwright_init_script, fingerprint_user_agent
@@ -480,7 +531,14 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
     for block_attempt in tries:
         logger.info("Fetching page %d: %s", page_num, url)
         load_failed = False
-        for attempt in range(1, args.retries + 1):
+        # Asked before the browser is: a refused login makes Chromium wait
+        # out the whole load timeout, every attempt, without saying why.
+        refused = bool(pool) and not session.remote and pool.refuses_credentials(url)
+        outcome.proxy_auth_refused = refused
+        if refused:
+            load_failed = True
+            logger.error(page_flow.proxy_auth_refused_message(mask(pool.current)))
+        for attempt in (() if refused else range(1, args.retries + 1)):
             try:
                 bridge.run(page.goto(url, {"waitUntil": "domcontentloaded",
                                            "timeout": 60000}))
@@ -533,7 +591,9 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
             d = _driver(session)
 
     if load_failed:
-        logger.error("Gave up loading %s after %d attempt(s).", url, args.retries)
+        if not outcome.proxy_auth_refused:
+            # A refused proxy login was named above, and no attempt was made.
+            logger.error("Gave up loading %s after %d attempt(s).", url, args.retries)
         outcome.load_failed = True
         return outcome
 

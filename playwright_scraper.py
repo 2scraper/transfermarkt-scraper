@@ -91,7 +91,7 @@ from product_parser import (parse_market_values, parse_club_squad,
 from output_writer import dedupe_by_key, finish_run, RemoteAPIError, EXIT_REMOTE_API_ERROR
 import page_flow
 from proxy_pool import (from_args as proxy_pool_from_args, to_playwright, mask,
-                        ROTATE_MODES, ProxyError, ProxyPool)
+                        ROTATE_MODES, ProxyError, ProxyPool, PROXY_AUTH_REFUSED)
 import env_config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -135,6 +135,9 @@ class PageOutcome:
     served_page: Optional[int] = None
     # The target answered 5xx on every try (page_flow.STOP_TARGET_HTTP_5XX).
     server_error: bool = False
+    # The exit answered CONNECT with 407 — nothing was requested from the
+    # site (proxy_pool.connect_status).
+    proxy_auth_refused: bool = False
 
     @property
     def ok(self) -> bool:
@@ -600,7 +603,15 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         logger.info("Fetching page %d: %s", page_num, url)
         load_failed, exit_failed = False, None
         resp_status, resp_headers = None, None
-        for attempt in range(1, args.retries + 1):
+        # Asked before the browser is: a refused login makes Chromium wait
+        # out the whole load timeout, every attempt, without saying why.
+        refused = bool(pool) and not session.remote and pool.refuses_credentials(url)
+        outcome.proxy_auth_refused = refused
+        if refused:
+            exit_failed, load_failed = PROXY_AUTH_REFUSED, True
+            last_error = "407 Proxy Authentication Required"
+            logger.error(page_flow.proxy_auth_refused_message(mask(pool.current)))
+        for attempt in (() if refused else range(1, args.retries + 1)):
             try:
                 # The Response is KEPT, not discarded. Until v0.4.1 this
                 # return value was thrown away and `_classify` was called
@@ -688,9 +699,12 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
             session.relaunch()
 
     if load_failed:
-        logger.error("Gave up loading %s after %d attempt(s) of %d. Last "
-                     "error: %s", url, attempts_made or args.retries,
-                     args.retries, last_error or "not recorded")
+        if not outcome.proxy_auth_refused:
+            # A refused proxy login was named above, and no attempt was made:
+            # "after 3 attempt(s)" here would be false.
+            logger.error("Gave up loading %s after %d attempt(s) of %d. Last "
+                         "error: %s", url, attempts_made or args.retries,
+                         args.retries, last_error or "not recorded")
         outcome.load_failed = True
         return outcome
 

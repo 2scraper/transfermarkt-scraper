@@ -76,6 +76,21 @@ exit 4. On a later page of a paginated run the same thing is exit 6 with the
 rows gathered so far kept. `--dump-html PATH` saves exactly what the parser
 was given.
 
+## Exit 5 with `stop_reason: proxy_auth_refused`
+
+The proxy answered `407 Proxy Authentication Required`: it does not take the
+login and password in `--proxy` / `--proxy-file` / `TRANSFERMARKT_PROXY`.
+Each engine asks the exit with one `CONNECT` before the first page, so this
+comes within a second and nothing is requested from the site. Before
+2026-10-25 a browser was left to find out on its own: Playwright waited out
+the load timeout on every attempt (three minutes, `page_load_timeout`), and
+Selenium read Chrome's error page as a page with no rows (exit 4).
+
+A 2Captcha proxy login belongs to the API key that bought it — a new key
+means a new login. With Selenium the message is different: it cannot send a
+login at all, so any proxy that needs one answers 407 (see "Selenium" below).
+With several exits a refused one is left for the next, like any unusable exit.
+
 ## The row count is right but a column is empty
 
 **`price`/`currency` is `null` on a real player.** For `market-values` and
