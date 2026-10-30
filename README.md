@@ -1,4 +1,4 @@
-# transfermarkt-scraper
+# Transfermarkt Scraper — Market Values, Squads and Transfers in Python
 
 [![release](https://img.shields.io/github/v/release/2scraper/transfermarkt-scraper?sort=semver)](https://github.com/2scraper/transfermarkt-scraper/releases)
 [![tests](https://github.com/2scraper/transfermarkt-scraper/actions/workflows/tests.yml/badge.svg)](https://github.com/2scraper/transfermarkt-scraper/actions/workflows/tests.yml)
@@ -7,6 +7,8 @@
 [![licence](https://img.shields.io/badge/licence-MIT-lightgrey)](LICENSE)
 [![engines](https://img.shields.io/badge/engines-Playwright%20%7C%20Selenium%20%7C%20pyppeteer%20%7C%20CDP%20%7C%20Scraper%20API-informational)](#engines)
 [![runs without an account if AWS WAF passes your IP](https://img.shields.io/badge/runs%20without%20an%20account-if%20AWS%20WAF%20passes%20your%20IP-yellow)](#what-the-2captcha-products-are-for-here)
+
+**Transfermarkt scraper** — an open-source (MIT) Python tool that reads transfermarkt.com market-value rankings, club squads, the latest-transfers ledger and player profiles, and writes them to JSON or CSV. The site is fronted by AWS WAF on CloudFront, and whether it challenges you depends on your address on the day: on 2026-09-16 a bare datacentre address drew a captcha on 8 of 10 requests, while later that day six other network positions drew none — so the repo ships a probe to test your own address first. Use it to build football market-value datasets, or to compare two runs of the same page.
 
 Scrapes **transfermarkt.com**: player market-value rankings, a club's full
 squad, the latest-transfers ledger, and individual player profiles. JSON or
@@ -832,3 +834,21 @@ attempt to reach anything behind an account.
 MIT licensed — see [LICENSE](LICENSE).
 
 Built by [2Captcha](https://2captcha.com).
+
+## Guides
+
+- [How to scrape Transfermarkt: step-by-step guide](https://2captcha.com/h/how-to-scrape-transfermarkt)
+- [How to run the 2scraper scrapers: setup, proxies, exit codes and access modes](https://2captcha.com/h/how-to-run-2scraper-open-source-scrapers) — installation, `.env`, `.meta.json` for the whole family.
+
+## Related scrapers
+
+Same CLI conventions, same output contract (one row per item, JSON or CSV, a `.meta.json` sidecar and shared exit codes):
+
+- [Weibo scraper](https://github.com/2scraper/weibo-scraper) — Hot feed, account timelines and post comments…
+- [YouTube scraper](https://github.com/2scraper/youtube-scraper) — Comment threads, replies, video metadata and search
+- [Meta Ad Library scraper](https://github.com/2scraper/facebook-ads-scraper) — Every ad of a keyword or advertiser search in Meta's Ad…
+- [Facebook scraper](https://github.com/2scraper/facebook-pages-scraper) — Public Facebook Pages — contacts, followers, owner…
+- [Instagram scraper](https://github.com/2scraper/instagram-scraper) — Public profiles, posts and Reels, read logged out
+- [Snapchat scraper](https://github.com/2scraper/snapchat-scraper) — Public Snapchat profiles, Spotlight engagement and story…
+
+All scrapers: [github.com/2scraper](https://github.com/2scraper) · Need another site? [Open a request](https://github.com/2scraper/.github/issues/new?title=%5BScraper%20request%5D%20)
