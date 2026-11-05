@@ -4,6 +4,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- CI only: the scheduled canary now starts at 10:27 UTC (Mondays) instead of 07:37, so canaries that share one Scraping Browser profile no longer start at the same time and lock each other out.
+
 ## [1.3.0] — 2026-10-26
 
 1.2.1 was prepared on 2026-10-22 (branch `release/v1.2.1`) and never tagged;
