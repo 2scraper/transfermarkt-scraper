@@ -42,6 +42,208 @@ them completely.
 
 ---
 
+## Example output
+
+One record from [`sample_output.json`](sample_output.json), a market-values
+listing row parsed from a real capture on 2026-09-10 — every column, in the
+output's order (the detail-only fields are null on a listing row and filled
+by `--mode player`):
+
+```json
+{
+  "source": "transfermarkt.com",
+  "scraped_at": "2026-09-10T08:21:28.159063+00:00",
+  "url": "https://www.transfermarkt.com/x/profil/spieler/937958",
+  "sku": "937958",
+  "title": "Lamine Yamal",
+  "image_url": "https://img.a.transfermarkt.technology/portrait/small/937958-1773173768.jpg?lm=4711",
+  "price": 220000000.0,
+  "currency": "EUR",
+  "price_source": "listing",
+  "category": "market-values",
+  "rank": 1,
+  "page": 1,
+  "row_index": 0,
+  "position": "Right Winger",
+  "shirt_number": null,
+  "age": 19,
+  "nationality": "Spain",
+  "nationalities": [
+    "Spain"
+  ],
+  "club": "FC Barcelona",
+  "club_id": "131",
+  "full_name": null,
+  "birth_date": null,
+  "birth_place": null,
+  "height_m": null,
+  "agent": null,
+  "league": null,
+  "league_id": null,
+  "joined_date": null,
+  "contract_until": null,
+  "market_value_last_update": null,
+  "caps": null,
+  "international_goals": null
+}
+```
+
+Full sample: [`sample_output.json`](sample_output.json) · 26 rows, collected
+2026-09-10 (25 market-values rows and 1 player profile). `--mode transfers`
+writes a different row, described under
+[Two kinds of row, not one](#two-kinds-of-row-not-one).
+
+## Requirements and access
+
+| | |
+|---|---|
+| Runtime | Python 3.9 or newer (the offline suite runs on 3.9 and 3.12 in CI); Playwright with its Chromium (the primary local engine); Selenium or pyppeteer as alternatives, one per virtualenv; `scraper_api_client.py` with no browser at all |
+| Coverage | transfermarkt.com and four more Transfermarkt sites (`.de`, `.world`, `.co.kr`, `.jp`): the market-value ranking, a club's squad, the latest-transfers ledger and player profiles. Every value is in EUR. See [Coverage and limitations](#coverage-and-limitations) |
+| Required for the documented scenario | **It depends on your address.** The site is fronted by AWS WAF on CloudFront. Where it lets your address through — a Hetzner datacentre address on 2026-11-18, GitHub runners every week — a local engine needs no key, proxy or account. Where it serves a captcha, the README's documented default is the **2Captcha Scraping Browser API** (`--cdp-endpoint`), with **captcha solving** (`TWOCAPTCHA_KEY`) as the fallback |
+| Optional: 2Captcha Scraping Browser API | Its own exit and a persistent profile, no local Chromium; its auto-solve cleared 5 of 5 captchas on 2026-09-17, and did not on Singapore exits on 2026-10-21 |
+| Optional: captcha solving | AWS WAF's captcha through `AmazonTask` with the page's own exit; at most one solve per page |
+| Optional: proxies, fingerprint, Scraper API | `--proxy-file` for another exit; `--fingerprint` for a consistent device identity; `scraper_api_client.py` fetches pages over plain HTTPS through 2Captcha's Scraper API |
+| Measured | 2026-11-18 at `2716be5`: probe and Quick start from a Hetzner datacentre address; weekly canary from a bare GitHub runner; captcha paths on 2026-09-17 and 2026-10-21. See [Verification](#verification) |
+
+## Quick start
+
+```bash
+git clone https://github.com/2scraper/transfermarkt-scraper
+cd transfermarkt-scraper
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt -r requirements-playwright.txt
+playwright install chromium
+
+bash tools/waf_probe.sh 10 market-values      # how AWS WAF answers your address
+python3 playwright_scraper.py --mode market-values
+```
+
+No key, proxy or `.env` for a first run. The probe counts every response that
+carries an AWS WAF action. A **challenge** action is the silent JS check,
+which the browser engines wait out by themselves: on 2026-11-18 the probe
+reported 10 of 10 challenged from a datacentre address, and the Playwright
+run from that address was complete without paying for anything. A
+**captcha** action is the one that needs the Scraping Browser API or a key.
+
+It writes three files to the current directory (`--out` sets the prefix):
+
+* `transfermarkt_products.json` and `transfermarkt_products.csv` — one row
+  per player (25 per ranking page);
+* `transfermarkt_products.meta.json` — `status`, `stop_reason`, `mode`,
+  `source` and which pages failed.
+
+If the run does not end with exit 0:
+
+* **exit 3, blocked** — a challenge or captcha stayed on the page: run the
+  probe from the same machine, then use `--cdp-endpoint` or `--proxy-file`.
+  See [What the 2Captcha products are for here](#what-the-2captcha-products-are-for-here).
+* **exit 4, zero rows** — the site's answer really was nothing: an empty
+  squad, or a club, player or URL that does not exist (`stop_reason:
+  not_found`).
+* **exit 5 or 6, not obtained or partial** — 5: nothing could be fetched or
+  read (a dead exit, a server error after retries, a markup change, a failed
+  2Captcha product call); 6: some pages fetched, then stopped. See
+  [Exit codes](#exit-codes).
+
+Setup, `.env` and exit codes for the whole family:
+[How to run the 2scraper scrapers](https://2captcha.com/h/how-to-run-2scraper-open-source-scrapers).
+
+## Coverage and limitations
+
+The short version: four page kinds on five Transfermarkt hosts; two row
+schemas (players and transfers); club names are not translated; on an
+address that meets AWS WAF's captcha, no path got through on 2026-10-21.
+
+### Known limitations
+
+Stated plainly rather than discovered the hard way:
+
+- **The ORIGINAL build/test environment for this repo could not complete a
+  live browser connection to www.transfermarkt.com at all** — both a direct
+  `requests` call and a local Playwright browser failed at the TCP/TLS
+  layer there, traced to that *sandbox's own outbound allowlist* rejecting
+  the destination, not to anything Transfermarkt did. **A second, separate
+  environment (2026-09-10, during this v0.1 review) reached the site with a
+  plain, unauthenticated `requests`-style fetch — no browser, no proxy, no
+  `--cdp-url` — for all four page kinds**, each a complete, current page
+  (120-360KB) with no challenge markup, and `product_parser`'s parsing
+  functions run directly against that HTML produced the same shapes of row
+  this README and `sample_output.json` report. That is real evidence a
+  plain HTTP path works from AT LEAST ONE non-datacentre-flagged network,
+  which is why `scraper_api_client.py` (the browserless fourth engine,
+  below) exists and needs no `--cdp-url` by default. **That gap is now closed for
+  all three browser engines and for the Docker image**: live runs from a
+  home connection on 2026-09-16 each returned 25 rows at 100% price coverage
+  from `--mode market-values --pages 1`, plus 50 rows from
+  `--mode transfers --pages 2` and one full profile from
+  `--mode player --player-id 418560`, every run `status=complete` and every
+  pairing identical under `diff_runs.py`. Whether a known-datacentre IP is
+  treated differently is a question about an address, and
+  `tools/waf_probe.sh` is how you answer it for yours.
+- **An AWS WAF captcha met on 2026-10-21 was not cleared — by any path.**
+  Singapore exits drew the captcha on every request (curl 3 of 3 per
+  session; the Scraping Browser on an SG profile every time). Measured on
+  those exits:
+  - the Scraping Browser's own auto-solve reported `solveFinished` (6-30 s),
+    and the reload served the captcha again — the engine now passes it to
+    the solver API instead of stopping there;
+  - `AmazonTask` through the page's own exit returned a real
+    `captcha_voucher` in ~10 s in 4 of 6 tries (the other 2:
+    `existing_token` only), $0.00145 each;
+  - the voucher is not the cookie: set raw it was refused; exchanged at
+    `/voucher` beside the page's `challenge.js` it gives a token (HTTP 200),
+    which the engine now does — and the page's OWN integration,
+    `ChallengeScript.submitCaptcha(voucher)`, accepted it too;
+  - after each of those, the page served the captcha again.
+  So on those exits nothing this repo or the site's own widget does gets
+  through, and why is not isolated. Other exits drew no captcha at all
+  that day; use another profile or exit when one does.
+- **Selenium cannot use the Scraping Browser API** (see the engine limits
+  above), so on an address that meets the WAF, Playwright or pyppeteer is
+  the engine to reach for. The solve path itself is now identical in all
+  three.
+- **Five hosts are supported** (`.com`, `.de`, `.world`, `.co.kr`, `.jp` —
+  see "Locales" above). Other locale sites (`.es`, `.co.uk`, ...) were not
+  checked and are refused with a reason.
+- **Locale coverage is uneven and the transfers-listing fee-type text is
+  English-only** — see "Locales" above for exactly what is and is not
+  translated per locale.
+- **`scraper_api_client.py` paginates market-values by `?page=N` only.**
+  Since 2026-10-21 that is every engine's path for this mode (see "the
+  gallery pagination trap"), so `--mode market-values --pages 2` reads 50
+  rows there too. Should page 1 ever carry a next-link that is neither the
+  plain nor the gallery shape, this client stops at page 1 with exit 6
+  (`stateless_pagination_unavailable`) rather than guess.
+- **Three modes, not the old scraper's ~24 categories.** This is a
+  deliberate v0.1 scope decision (market-values, club-squad, transfers,
+  plus player detail as the natural fourth mode the other three need to
+  enrich a row) rather than porting every category the previous version of
+  this project covered.
+
+## Examples
+
+- [How to scrape Transfermarkt: step-by-step guide](https://2captcha.com/h/how-to-scrape-transfermarkt)
+- [Transfermarkt scraper on 2scraper.com](https://2scraper.com/scrapers/transfermarkt-scraper/) — what it collects, requirements and related scrapers on one page.
+- [How to run the 2scraper scrapers: setup, proxies, exit codes and access modes](https://2captcha.com/h/how-to-run-2scraper-open-source-scrapers) — installation, `.env`, `.meta.json` for the whole family.
+
+
+Commands for every mode are under
+[What this repo does, in four modes](#what-this-repo-does-in-four-modes) and
+[Usage](#usage); the other language sites under [Locales](#locales).
+
+## Verification
+
+| Date, commit | Check | Conditions | Result |
+|---|---|---|---|
+| 2026-11-18, `2716be5` | Quick start install | a fresh virtualenv, Python 3.13, `requirements.txt` + `requirements-playwright.txt` (Playwright 1.65.2) | installs; every flag used in the Quick start and the mode examples is in `--help` |
+| 2026-11-18, `2716be5` | `tools/waf_probe.sh 10 market-values` | curl, no proxy, one Hetzner datacentre address | 10 of 10 answered HTTP 202 by CloudFront with the AWS WAF **challenge** action |
+| 2026-11-18, `2716be5` | Quick start, as written above | headless Playwright, no proxy, no key, no `.env`, the same address | the challenge action cleared by itself in under a second, nothing paid; **25 rows**, 25 unique `sku`, `price` (EUR) on 25 of 25, `status: complete`, exit 0; the same 32 columns in the same order as `sample_output.json` |
+| 2026-11-18, `2716be5` | Offline suite | `python3 smoke_test.py`, core requirements only | passed |
+| 2026-10-16 to 2026-11-16 | [Canary](https://github.com/2scraper/transfermarkt-scraper/actions/workflows/canary.yml), weekly | a bare GitHub runner, local Playwright, no secret | green on every run; on 2026-11-16 75 market-values rows over 3 pages and 75 transfers rows, both `complete` |
+| 2026-10-21 | Singapore exits that drew the captcha | curl; the Scraping Browser's auto-solve; `AmazonTask` through the page's exit | not cleared by any path (see [Known limitations](#known-limitations)) |
+| 2026-09-17 | Scraping Browser auto-solve, with a control | an endpoint that met the captcha | 5 of 5 captchas cleared, 25 rows, `complete`; with `--no-autosolve` blocked through 8 of 8 reloads |
+| 2026-09-16 | All three engines and the Docker image | a home connection | the same rows from every engine (`diff_runs.py`: 0 added, 0 removed, 0 changed) |
+
 ## What this repo does, in four modes
 
 ```bash
@@ -501,8 +703,8 @@ The order below is the order to reach for them in.
 
 | Product | What it is for |
 |---|---|
-| **Scraping Browser API** (`--cdp-endpoint`) — *the default path* | A browser you neither run nor patch, carrying its own exit and a persistent profile, so it answers the address question and the browser question at once. Its auto-solve extension clears this site's AWS WAF captcha before the local solver is offered one (`Captcha.setAutoSolve`). Measured 2026-09-17 with a control: 5 of 5 captchas met were cleared by the auto-solve (30–63 s each, 25 rows, `status=complete`), while the same endpoint with `--no-autosolve` stayed blocked through 8 of 8 reloads. |
-| **Captcha solving** (`--twocaptcha-key`) — *the fallback* | 2Captcha's API takes the AWS WAF captcha this site serves; all four parameters it needs are published in the challenge page's own `window.gokuProps` (`captcha_solver.detect_aws_waf`). With a run exit it is sent as `AmazonTask` carrying that exit, otherwise as `AmazonTaskProxyless`. Run against a live captcha on 2026-09-17: the proxyless type returned a token that did not clear the page, and `AmazonTask` with the page's own exit returned a voucher in about 20–25 s. That the site then served the page on a solver-API token has not been recorded. At most one solve is bought per page, however many exits a blocked page is retried from. `BOT_CHALLENGE_MARKERS` also covers Cloudflare, DataDome, PerimeterX/HUMAN, reCAPTCHA and hCaptcha. |
+| **Scraping Browser API** (`--cdp-endpoint`) — *the default path* | A browser you neither run nor patch, carrying its own exit and a persistent profile, so it answers the address question and the browser question at once. Its auto-solve extension is offered this site's AWS WAF captcha before the local solver is (`Captcha.setAutoSolve`). Measured 2026-09-17 with a control: 5 of 5 captchas met were cleared by the auto-solve (30–63 s each, 25 rows, `status=complete`), while the same endpoint with `--no-autosolve` stayed blocked through 8 of 8 reloads. On 2026-10-21, on Singapore exits, it reported `solveFinished` and the page served the captcha again (see [Known limitations](#known-limitations)). |
+| **Captcha solving** (`--twocaptcha-key`) — *the fallback* | 2Captcha's API takes the AWS WAF captcha this site serves; all four parameters it needs are published in the challenge page's own `window.gokuProps` (`captcha_solver.detect_aws_waf`). With a run exit it is sent as `AmazonTask` carrying that exit, otherwise as `AmazonTaskProxyless`. Run against a live captcha on 2026-09-17: the proxyless type returned a token that did not clear the page, and `AmazonTask` with the page's own exit returned a voucher in about 20–25 s. That the site then served the page on a solver-API token has not been recorded. At most one solve is bought per page, however many exits a blocked page is retried from. `BOT_CHALLENGE_MARKERS` also covers Cloudflare, DataDome, PerimeterX/HUMAN, reCAPTCHA and another captcha vendor's widget. |
 | **Proxies** (`--proxy-file`) | An exit that is not your own, without a remote browser — worth reaching for when you already run Chromium somewhere and only the address is the problem, or when you want volume spread over many exits. Measured 2026-09-16: the real page returned from a 2Captcha proxy exit with no solve needed. |
 | **Fingerprints** (`--fingerprint`) | A consistent device identity across runs. |
 
@@ -675,74 +877,6 @@ runs that are not both `complete`, or that are different modes.
 
 ---
 
-## Known limitations
-
-Stated plainly rather than discovered the hard way:
-
-- **The ORIGINAL build/test environment for this repo could not complete a
-  live browser connection to www.transfermarkt.com at all** — both a direct
-  `requests` call and a local Playwright browser failed at the TCP/TLS
-  layer there, traced to that *sandbox's own outbound allowlist* rejecting
-  the destination, not to anything Transfermarkt did. **A second, separate
-  environment (2026-09-10, during this v0.1 review) reached the site with a
-  plain, unauthenticated `requests`-style fetch — no browser, no proxy, no
-  `--cdp-url` — for all four page kinds**, each a complete, current page
-  (120-360KB) with no challenge markup, and `product_parser`'s parsing
-  functions run directly against that HTML produced the same shapes of row
-  this README and `sample_output.json` report. That is real evidence a
-  plain HTTP path works from AT LEAST ONE non-datacentre-flagged network,
-  which is why `scraper_api_client.py` (the browserless fourth engine,
-  below) exists and needs no `--cdp-url` by default. **That gap is now closed for
-  all three browser engines and for the Docker image**: live runs from a
-  home connection on 2026-09-16 each returned 25 rows at 100% price coverage
-  from `--mode market-values --pages 1`, plus 50 rows from
-  `--mode transfers --pages 2` and one full profile from
-  `--mode player --player-id 418560`, every run `status=complete` and every
-  pairing identical under `diff_runs.py`. Whether a known-datacentre IP is
-  treated differently is a question about an address, and
-  `tools/waf_probe.sh` is how you answer it for yours.
-- **An AWS WAF captcha met on 2026-10-21 was not cleared — by any path.**
-  Singapore exits drew the captcha on every request (curl 3 of 3 per
-  session; the Scraping Browser on an SG profile every time). Measured on
-  those exits:
-  - the Scraping Browser's own auto-solve reported `solveFinished` (6-30 s),
-    and the reload served the captcha again — the engine now passes it to
-    the solver API instead of stopping there;
-  - `AmazonTask` through the page's own exit returned a real
-    `captcha_voucher` in ~10 s in 4 of 6 tries (the other 2:
-    `existing_token` only), $0.00145 each;
-  - the voucher is not the cookie: set raw it was refused; exchanged at
-    `/voucher` beside the page's `challenge.js` it gives a token (HTTP 200),
-    which the engine now does — and the page's OWN integration,
-    `ChallengeScript.submitCaptcha(voucher)`, accepted it too;
-  - after each of those, the page served the captcha again.
-  So on those exits nothing this repo or the site's own widget does gets
-  through, and why is not isolated. Other exits drew no captcha at all
-  that day; use another profile or exit when one does.
-- **Selenium cannot use the Scraping Browser API** (see the engine limits
-  above), so on an address that meets the WAF, Playwright or pyppeteer is
-  the engine to reach for. The solve path itself is now identical in all
-  three.
-- **Five hosts are supported** (`.com`, `.de`, `.world`, `.co.kr`, `.jp` —
-  see "Locales" above). Other locale sites (`.es`, `.co.uk`, ...) were not
-  checked and are refused with a reason.
-- **Locale coverage is uneven and the transfers-listing fee-type text is
-  English-only** — see "Locales" above for exactly what is and is not
-  translated per locale.
-- **`scraper_api_client.py` paginates market-values by `?page=N` only.**
-  Since 2026-10-21 that is every engine's path for this mode (see "the
-  gallery pagination trap"), so `--mode market-values --pages 2` reads 50
-  rows there too. Should page 1 ever carry a next-link that is neither the
-  plain nor the gallery shape, this client stops at page 1 with exit 6
-  (`stateless_pagination_unavailable`) rather than guess.
-- **Three modes, not the old scraper's ~24 categories.** This is a
-  deliberate v0.1 scope decision (market-values, club-squad, transfers,
-  plus player detail as the natural fourth mode the other three need to
-  enrich a row) rather than porting every category the previous version of
-  this project covered.
-
----
-
 ## Troubleshooting
 
 **`--mode market-values --pages N` reports `partial` past page 1.** Check
@@ -835,10 +969,75 @@ MIT licensed — see [LICENSE](LICENSE).
 
 Built by [2Captcha](https://2captcha.com).
 
-## Guides
+## FAQ
 
-- [How to scrape Transfermarkt: step-by-step guide](https://2captcha.com/h/how-to-scrape-transfermarkt)
-- [How to run the 2scraper scrapers: setup, proxies, exit codes and access modes](https://2captcha.com/h/how-to-run-2scraper-open-source-scrapers) — installation, `.env`, `.meta.json` for the whole family.
+### Does Transfermarkt have a public API?
+
+This repository does not use one. The site publishes no JSON-LD on any page
+kind it covers, so every field comes from the HTML itself: Transfermarkt's
+URL patterns, the `schema.org/Person` microdata on a player's profile, and
+the site's own table class names. See
+[No JSON-LD anywhere on this site](#no-json-ld-anywhere-on-this-site).
+
+### Is it legal to scrape transfermarkt.com?
+
+This is not legal advice. Scraping public pages is permitted in many
+jurisdictions, but Transfermarkt's terms of use, `robots.txt`, copyright and
+data-protection law differ between countries. Player profiles carry personal
+data — birth date, birthplace, agent — so check the law that applies to you
+before storing them, keep the request rate low, and do not collect what you
+have no lawful basis for. The scraper reads publicly rendered pages and
+nothing behind an account.
+
+### Why does Transfermarkt block headless browsers or datacentre IPs?
+
+Its AWS WAF decides per address and per day, and its rules are not
+published. Measured: on 2026-09-16 a bare datacentre address drew a captcha
+on 8 of 10 requests, while six other network positions drew none later that
+day; on 2026-11-18 a Hetzner datacentre address got only the silent
+challenge, which headless Playwright cleared by itself; on 2026-10-21
+Singapore exits drew a captcha that nothing cleared. Run
+`tools/waf_probe.sh` from your own address.
+
+### How do I run the Transfermarkt scraper on a server?
+
+If AWS WAF lets the server's address through, exactly as in the
+[Quick start](#quick-start): headless is the default, and the weekly canary
+runs that way on a bare GitHub runner. If it serves a captcha, put a
+Scraping Browser API endpoint into `.env` with
+`tools/browser_profile_client.py use --account-id N --write-env`. A Docker
+image with Playwright and Chromium is described under [Docker](#docker).
+
+### What fields does the scraper return?
+
+Two row schemas, both opening with the family prefix (`source`,
+`scraped_at`, `url`, `sku`, `title`, `image_url`, `price`, `currency`,
+`category`). A **player** row (market-values, club-squad, player) has 32
+columns: `price_source`, `rank`, `page`, `row_index`, `position`,
+`shirt_number`, `age`, `nationality`, `nationalities`, `club`, `club_id`,
+`full_name`, `birth_date`, `birth_place`, `height_m`, `agent`, `league`,
+`league_id`, `joined_date`, `contract_until`, `market_value_last_update`,
+`caps`, `international_goals` after the prefix. A **transfer** row has 23:
+`page`, `row_index`, `player_id`, `position`, `age`, `nationality`,
+`nationalities`, `from_club`, `from_club_id`, `from_league`, `to_club`,
+`to_club_id`, `to_league`, `fee_type` after the prefix.
+
+### Does it work on the German and other Transfermarkt sites?
+
+Yes, on five hosts: `www.transfermarkt.com`, `.de`, `.world` (Russian),
+`.co.kr` and `.jp`. Pass a full `--url` on that host; positions,
+nationalities, money and dates are normalised to one English vocabulary,
+club names stay as printed. Other locale sites (`.es`, `.co.uk`, …) were not
+checked and are refused with a reason. See [Locales](#locales).
+
+### How often does it break when transfermarkt.com changes?
+
+A weekly canary scrapes three market-values pages and three transfers pages
+from a bare GitHub runner with no secret, and goes red on a block, an empty
+result or a partial run; it has been green on every run since 2026-10-16.
+The market-values pagination trap was handled for every engine on
+2026-10-21 (see [the gallery pagination trap](#the-gallery-pagination-trap-market-values--and-how-it-is-handled)).
+Fixes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## Related scrapers
 
@@ -846,7 +1045,7 @@ Same CLI conventions, same output contract (one row per item, JSON or CSV, a `.m
 
 - [Weibo scraper](https://github.com/2scraper/weibo-scraper) — Hot feed, account timelines and post comments…
 - [YouTube scraper](https://github.com/2scraper/youtube-scraper) — Comment threads, replies, video metadata and search
-- [Meta Ad Library scraper](https://github.com/2scraper/facebook-ads-scraper) — Every ad of a keyword or advertiser search in Meta's Ad…
+- [Facebook Ads scraper](https://github.com/2scraper/facebook-ads-scraper) — Ads from Meta Ad Library keyword and advertiser searches
 - [Facebook scraper](https://github.com/2scraper/facebook-pages-scraper) — Public Facebook Pages — contacts, followers, owner…
 - [Instagram scraper](https://github.com/2scraper/instagram-scraper) — Public profiles, posts and Reels, read logged out
 - [Snapchat scraper](https://github.com/2scraper/snapchat-scraper) — Public Snapchat profiles, Spotlight engagement and story…
